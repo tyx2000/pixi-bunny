@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Not part of the puzzle feature. -->
+    <!-- <link rel="icon" type="image/svg+xml" href="/favicon.svg" /> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>webgl-box</title>
+  </head>
+  <body>
+    <main id="game-shell">
+      <canvas id="app-canvas"></canvas>
+      <div id="hud" aria-live="polite">
+        <span>Moves: <strong id="moves-count">0</strong></span>
+        <span id="status-text">Loading image</span>
+        <button id="shuffle-button" type="button">Shuffle</button>
+      </div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

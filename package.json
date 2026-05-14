@@ -1,0 +1,21 @@
+{
+  "name": "webgl-box",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.3",
+    "vite": "^8.0.10"
+  },
+  "dependencies": {
+    "mediabunny": "^1.45.0",
+    "pixi.js": "^8.18.1"
+  }
+}
