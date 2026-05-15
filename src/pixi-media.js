@@ -35,7 +35,9 @@ const VIDEO_TRACK_WIDTH = EDITOR_PANEL_WIDTH - TRACK_LABEL_WIDTH - 18;
 const VIDEO_TRACK_HEIGHT = 58;
 const VIDEO_THUMB_WIDTH = 92;
 const VIDEO_THUMB_HEIGHT = 52;
-const VIDEO_THUMB_GAP = 4;
+const TIMELINE_PIXELS_PER_SECOND = 10;
+const EDITOR_RULER_Y = EDITOR_PANEL_Y + 18;
+const EDITOR_PLAYHEAD_X = VIDEO_TRACK_X + VIDEO_TRACK_WIDTH / 2;
 const VIDEO_FRAME_MIN_INTERVAL = 1 / 30;
 const TEXT_OVERLAY_INTERVALS = [
   { duration: 4, startTime: 2 },
@@ -134,8 +136,12 @@ export async function startPixiMedia() {
   const timelineKnob = new Graphics();
   const editorTimeline = new Container();
   const editorTimelineBackground = new Graphics();
+  const editorTimelineContent = new Container();
+  const editorTimelineRuler = new Graphics();
+  const editorTimelineRulerLabels = new Container();
   const editorTimelineFrames = new Container();
   const editorTimelinePlayhead = new Graphics();
+  const editorTimelineMask = new Graphics();
   const editorTimelineLabel = new Text({
     text: "Video",
     style: {
@@ -220,13 +226,20 @@ export async function startPixiMedia() {
   textLayer.addChild(overlayImageGroup, overlayText);
   controlsLayer.addChild(timeline);
   timeline.addChild(timelineTrack, timelineFill, timelineKnob, currentTimeText, durationText);
+  editorTimelineContent.addChild(
+    editorTimelineRuler,
+    editorTimelineRulerLabels,
+    editorTimelineFrames
+  );
   editorTimeline.addChild(
     editorTimelineBackground,
-    editorTimelineFrames,
+    editorTimelineContent,
     editorTimelinePlayhead,
+    editorTimelineMask,
     editorTimelineLabel,
     editorTimelineStatus
   );
+  editorTimelineContent.mask = editorTimelineMask;
 
   timeline.visible = false;
   timeline.eventMode = "static";
@@ -244,8 +257,8 @@ export async function startPixiMedia() {
   editorTimeline.visible = false;
   editorTimelineLabel.anchor.set(0, 0.5);
   editorTimelineLabel.position.set(EDITOR_PANEL_X + 14, VIDEO_TRACK_Y + VIDEO_TRACK_HEIGHT / 2);
-  editorTimelineStatus.anchor.set(0, 0.5);
-  editorTimelineStatus.position.set(VIDEO_TRACK_X + 12, VIDEO_TRACK_Y + VIDEO_TRACK_HEIGHT / 2);
+  editorTimelineStatus.anchor.set(0.5, 0.5);
+  editorTimelineStatus.position.set(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 14);
 
   titleText.anchor.set(0.5);
   titleText.position.set(VIEW_WIDTH / 2, VIEW_HEIGHT / 2 - 22);
@@ -279,6 +292,7 @@ export async function startPixiMedia() {
   let videoTrackBuildId = 0;
   let videoTrackTextures = [];
   let videoTrackLoading = false;
+  let editorTimelineRulerDuration = -1;
   let lastVideoFrameTime = -1;
   let wasPlayingBeforeSeek = false;
   let suppressNextCanvasToggle = false;
@@ -319,6 +333,7 @@ export async function startPixiMedia() {
 
     if (mediaElement) {
       mediaElement.removeEventListener("seeked", handleMediaSeeked);
+      mediaElement.removeEventListener("ended", handleMediaEnded);
       mediaElement.pause();
       mediaElement.removeAttribute("src");
       mediaElement.load();
@@ -379,7 +394,7 @@ export async function startPixiMedia() {
       titleText.visible = false;
       detailText.visible = false;
       resizeCanvas();
-      app.start();
+      app.render();
     } catch (error) {
       clearCurrentMedia();
       titleText.visible = true;
@@ -407,7 +422,7 @@ export async function startPixiMedia() {
   async function loadVideo(file) {
     const video = document.createElement("video");
 
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
     video.preload = "auto";
     video.src = objectUrl;
@@ -428,21 +443,14 @@ export async function startPixiMedia() {
     exportButton.disabled = false;
     statusText.textContent = `Video ${videoFrameProvider.width}x${videoFrameProvider.height}`;
     video.addEventListener("seeked", handleMediaSeeked);
+    video.addEventListener("ended", handleMediaEnded);
     startVideoTrackBuild(file);
-
-    video
-      .play()
-      .then(() => {
-        statusText.textContent = "Click canvas to pause";
-      })
-      .catch(() => {
-        statusText.textContent = "Click canvas to play";
-      });
+    statusText.textContent = "Click canvas to play";
   }
 
   async function loadAudio(file) {
     mediaElement = new Audio(objectUrl);
-    mediaElement.loop = true;
+    mediaElement.loop = false;
     mediaElement.preload = "auto";
     await waitForMediaReady(mediaElement, "loadedmetadata", "audio");
 
@@ -461,15 +469,7 @@ export async function startPixiMedia() {
     currentKind = "audio";
     statusText.textContent = "Click canvas to play";
     mediaElement.addEventListener("seeked", handleMediaSeeked);
-
-    mediaElement
-      .play()
-      .then(() => {
-        statusText.textContent = "Click canvas to pause";
-      })
-      .catch(() => {
-        statusText.textContent = "Click canvas to play";
-      });
+    mediaElement.addEventListener("ended", handleMediaEnded);
   }
 
   function fitMediaSprite() {
@@ -801,13 +801,22 @@ export async function startPixiMedia() {
     editorTimelineFrames.removeChildren().forEach((child) => child.destroy());
     videoTrackTextures.forEach((texture) => texture.destroy(true));
     videoTrackTextures = [];
+    clearEditorTimelineRuler();
+  }
+
+  function clearEditorTimelineRuler() {
+    editorTimelineRuler.clear();
+    editorTimelineRulerLabels.removeChildren().forEach((child) => child.destroy());
+    editorTimelineRulerDuration = -1;
   }
 
   function hideEditorTimeline() {
     editorTimeline.visible = false;
     editorTimelineBackground.clear();
     editorTimelinePlayhead.clear();
+    editorTimelineMask.clear();
     editorTimelineStatus.text = "";
+    editorTimelineContent.x = 0;
   }
 
   function drawEditorTimeline() {
@@ -817,8 +826,9 @@ export async function startPixiMedia() {
     }
 
     const duration = mediaElement.duration;
-    const progress = Math.min(Math.max(mediaElement.currentTime / duration, 0), 1);
-    const playheadX = VIDEO_TRACK_X + VIDEO_TRACK_WIDTH * progress;
+    const currentTime = Math.min(Math.max(mediaElement.currentTime, 0), duration);
+    buildEditorTimelineRuler(duration);
+    editorTimelineContent.x = EDITOR_PLAYHEAD_X - currentTime * TIMELINE_PIXELS_PER_SECOND;
 
     editorTimeline.visible = true;
     editorTimelineBackground.clear();
@@ -830,21 +840,84 @@ export async function startPixiMedia() {
       .roundRect(VIDEO_TRACK_X, VIDEO_TRACK_Y, VIDEO_TRACK_WIDTH, VIDEO_TRACK_HEIGHT, 6)
       .fill({ color: 0x111827, alpha: 0.98 })
       .stroke({ color: 0x475569, width: 1 });
+    editorTimelineBackground
+      .rect(VIDEO_TRACK_X, EDITOR_RULER_Y, VIDEO_TRACK_WIDTH, 1)
+      .fill({ color: 0x475569, alpha: 0.75 });
+
+    editorTimelineMask.clear();
+    editorTimelineMask
+      .rect(VIDEO_TRACK_X, EDITOR_PANEL_Y + 8, VIDEO_TRACK_WIDTH, EDITOR_PANEL_HEIGHT - 16)
+      .fill(0xffffff);
 
     editorTimelinePlayhead.clear();
     editorTimelinePlayhead
-      .moveTo(playheadX, EDITOR_PANEL_Y + 12)
-      .lineTo(playheadX, EDITOR_PANEL_Y + EDITOR_PANEL_HEIGHT - 12)
+      .moveTo(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 10)
+      .lineTo(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + EDITOR_PANEL_HEIGHT - 10)
       .stroke({ color: 0x38bdf8, width: 2 });
-    editorTimelinePlayhead.circle(playheadX, EDITOR_PANEL_Y + 12, 4).fill(0x38bdf8);
+    editorTimelinePlayhead.circle(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 10, 4).fill(0x38bdf8);
+    editorTimelineStatus.position.set(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 14);
+
+    if (!videoTrackLoading && videoTrackTextures.length > 0) {
+      editorTimelineStatus.text = "";
+    }
+  }
+
+  function getEditorTimelineContentWidth(duration) {
+    return Math.max(1, duration * TIMELINE_PIXELS_PER_SECOND);
+  }
+
+  function getEditorTimelineRulerDurationSeconds(duration) {
+    return Math.max(5, Math.ceil(duration / 5) * 5);
+  }
+
+  function buildEditorTimelineRuler(duration) {
+    if (Math.abs(editorTimelineRulerDuration - duration) < 0.001) {
+      return;
+    }
+
+    const lastSecond = getEditorTimelineRulerDurationSeconds(duration);
+    const contentWidth = lastSecond * TIMELINE_PIXELS_PER_SECOND;
+
+    editorTimelineRulerDuration = duration;
+    editorTimelineRuler.clear();
+    editorTimelineRulerLabels.removeChildren().forEach((child) => child.destroy());
+
+    editorTimelineRuler
+      .moveTo(0, EDITOR_RULER_Y)
+      .lineTo(contentWidth, EDITOR_RULER_Y)
+      .stroke({ color: 0x64748b, width: 1 });
+
+    for (let second = 0; second <= lastSecond; second += 1) {
+      const x = second * TIMELINE_PIXELS_PER_SECOND;
+      const tickHeight = second % 10 === 0 ? 13 : second % 5 === 0 ? 10 : 6;
+
+      editorTimelineRuler
+        .moveTo(x, EDITOR_RULER_Y)
+        .lineTo(x, EDITOR_RULER_Y - tickHeight)
+        .stroke({ color: second % 5 === 0 ? 0x94a3b8 : 0x64748b, width: 1 });
+
+      if (second % 10 === 0) {
+        const label = new Text({
+          text: formatRulerTime(second),
+          style: {
+            fill: "#94a3b8",
+            fontFamily: "Inter, system-ui, sans-serif",
+            fontSize: 10,
+            fontWeight: "600",
+          },
+        });
+
+        label.anchor.set(0.5, 0);
+        label.position.set(x, EDITOR_RULER_Y + 4);
+        editorTimelineRulerLabels.addChild(label);
+      }
+    }
   }
 
   function startVideoTrackBuild(file) {
     const buildId = videoTrackBuildId + 1;
-    const maxFrames = Math.max(
-      1,
-      Math.floor((VIDEO_TRACK_WIDTH + VIDEO_THUMB_GAP) / (VIDEO_THUMB_WIDTH + VIDEO_THUMB_GAP))
-    );
+    const contentWidth = getEditorTimelineContentWidth(videoFrameProvider.duration);
+    const maxFrames = Math.max(1, Math.min(420, Math.ceil(contentWidth / VIDEO_THUMB_WIDTH)));
     const intervalSeconds = Math.max(0.1, videoFrameProvider.duration / maxFrames);
 
     videoTrackBuildId = buildId;
@@ -868,12 +941,16 @@ export async function startPixiMedia() {
         }
 
         clearVideoTrackFrames();
+        buildEditorTimelineRuler(videoFrameProvider.duration);
         frames.forEach((frame, index) => {
           const texture = Texture.from(frame.canvas, true);
           const sprite = new Sprite({ texture });
+          const frameWidth = contentWidth / frames.length;
 
-          sprite.x = VIDEO_TRACK_X + 4 + index * (VIDEO_THUMB_WIDTH + VIDEO_THUMB_GAP);
+          sprite.x = index * frameWidth;
           sprite.y = VIDEO_TRACK_Y + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
+          sprite.width = Math.ceil(frameWidth) + 1;
+          sprite.height = VIDEO_THUMB_HEIGHT;
           videoTrackTextures.push(texture);
           editorTimelineFrames.addChild(sprite);
         });
@@ -1007,6 +1084,21 @@ export async function startPixiMedia() {
     return `${minutes.toString().padStart(2, "0")}:${secondText}.${millisecondText}`;
   }
 
+  function formatRulerTime(value) {
+    const safeValue = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    const seconds = safeValue % 60;
+    const totalMinutes = Math.floor(safeValue / 60);
+    const minutes = totalMinutes % 60;
+    const hours = Math.floor(totalMinutes / 60);
+    const secondText = seconds.toString().padStart(2, "0");
+
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, "0")}:${secondText}`;
+    }
+
+    return `${minutes}:${secondText}`;
+  }
+
   function seekFromPointer(event) {
     if (!isSeekableMedia()) {
       return;
@@ -1061,6 +1153,14 @@ export async function startPixiMedia() {
     updateVideoTexture(true);
     renderScene();
     app.render();
+  }
+
+  function handleMediaEnded() {
+    statusText.textContent = "Ended";
+    updateVideoTexture(true);
+    renderScene();
+    app.render();
+    app.stop();
   }
 
   function getTextOverlayExportState() {
