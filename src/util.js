@@ -1,11 +1,13 @@
 import {
   ALL_FORMATS,
+  AudioBufferSource,
   BlobSource,
   BufferTarget,
   CanvasSink,
   CanvasSource,
   EncodedAudioPacketSource,
   EncodedPacketSink,
+  getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
   Input,
   Mp4OutputFormat,
@@ -247,6 +249,128 @@ export async function exportVideoWithTextOverlay(source, overlay = {}, options =
   }
 }
 
+export async function exportTimelineComposition(videoClips, overlay = {}, options = {}) {
+  const { audioBuffer = null, duration, fps = 30, onProgress, poolSize = 4 } = options;
+
+  if (!Array.isArray(videoClips) || videoClips.length === 0) {
+    throw new Error("No video clips to export.");
+  }
+
+  const safeDuration = Number.isFinite(duration)
+    ? Math.max(0, duration)
+    : Math.max(...videoClips.map((clip) => clip.startTime + clip.duration));
+  const providers = [];
+
+  try {
+    for (const clip of videoClips) {
+      providers.push({
+        ...clip,
+        provider: await createMediabunnyVideoFrameProvider(clip.file, { fit: "contain", poolSize }),
+      });
+    }
+
+    const baseProvider = providers[0].provider;
+    const width = baseProvider.width;
+    const height = baseProvider.height;
+    const outputCanvas = document.createElement("canvas");
+    const outputContext = outputCanvas.getContext("2d", { alpha: false });
+
+    if (!outputContext) {
+      throw new Error("Cannot create export canvas context.");
+    }
+
+    outputCanvas.width = width;
+    outputCanvas.height = height;
+
+    const outputFormat = new Mp4OutputFormat();
+    const videoCodec = await getFirstEncodableVideoCodec(outputFormat.getSupportedCodecs(), {
+      bitrate: QUALITY_HIGH,
+      height,
+      width,
+    });
+
+    if (!videoCodec) {
+      throw new Error("Browser cannot encode MP4 video on this device.");
+    }
+
+    const target = new BufferTarget();
+    const output = new Output({
+      format: outputFormat,
+      target,
+    });
+    const videoSource = new CanvasSource(outputCanvas, {
+      bitrate: QUALITY_HIGH,
+      codec: videoCodec,
+      keyFrameInterval: 2,
+    });
+    const audioCodec =
+      audioBuffer &&
+      (await getFirstEncodableAudioCodec(outputFormat.getSupportedAudioCodecs(), {
+        bitrate: QUALITY_HIGH,
+        numberOfChannels: audioBuffer.numberOfChannels,
+        sampleRate: audioBuffer.sampleRate,
+      }));
+    const audioSource = audioCodec
+      ? new AudioBufferSource({
+          bitrate: QUALITY_HIGH,
+          codec: audioCodec,
+          numberOfChannels: audioBuffer.numberOfChannels,
+          sampleRate: audioBuffer.sampleRate,
+        })
+      : null;
+
+    output.addVideoTrack(videoSource);
+    if (audioSource) {
+      output.addAudioTrack(audioSource);
+    }
+
+    await output.start();
+
+    const audioPromise = audioSource ? audioSource.add(audioBuffer) : Promise.resolve();
+    const frameDuration = 1 / Math.max(1, fps);
+    const frameCount = Math.max(1, Math.ceil(safeDuration / frameDuration));
+
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      const timestamp = Math.min(frameIndex * frameDuration, Math.max(0, safeDuration - 0.001));
+      const activeClip = providers.find(
+        (clip) => timestamp >= clip.startTime && timestamp < clip.startTime + clip.duration
+      );
+
+      outputContext.fillStyle = "#000000";
+      outputContext.fillRect(0, 0, width, height);
+
+      if (activeClip) {
+        const frame = await activeClip.provider.drawFrameAt(timestamp - activeClip.startTime);
+
+        if (frame) {
+          drawContainedFrame(outputContext, frame.canvas, width, height);
+        }
+      }
+
+      drawImageOverlays(outputContext, width, height, timestamp, overlay.images);
+      drawImageOverlay(outputContext, width, height, timestamp, overlay.image);
+      drawTextOverlay(outputContext, width, height, timestamp, overlay);
+      await videoSource.add(timestamp, Math.min(frameDuration, safeDuration - timestamp));
+
+      if (typeof onProgress === "function") {
+        onProgress(Math.min(1, (timestamp + frameDuration) / safeDuration));
+      }
+    }
+
+    videoSource.close();
+    await audioPromise;
+    await output.finalize();
+
+    if (!target.buffer) {
+      throw new Error("Mediabunny did not produce an output buffer.");
+    }
+
+    return new Blob([target.buffer], { type: await output.getMimeType() });
+  } finally {
+    providers.forEach((clip) => clip.provider.dispose());
+  }
+}
+
 export async function extractVideoFramesWithPixi(renderer, source, options = {}) {
   const {
     intervalSeconds = 1,
@@ -384,6 +508,7 @@ function drawTextOverlay(context, width, height, time, overlay) {
     duration = 5,
     fillStyle = "#ffffff",
     fontFamily = "Inter, system-ui, sans-serif",
+    fontStyle = "normal",
     fontSizeRatio = 0.085,
     fontWeight = "800",
     intervals,
@@ -413,7 +538,7 @@ function drawTextOverlay(context, width, height, time, overlay) {
   context.globalAlpha = transition.alpha;
   context.translate(x, y);
   context.scale(transition.yScale, 1);
-  context.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  context.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineJoin = "round";
@@ -457,6 +582,26 @@ function drawImageOverlay(context, width, height, time, overlay) {
   context.scale(transition.yScale, 1);
   context.drawImage(imageSource, -targetWidth / 2, -targetHeight / 2, targetWidth, targetHeight);
   context.restore();
+}
+
+function drawImageOverlays(context, width, height, time, overlays) {
+  if (!Array.isArray(overlays)) {
+    return;
+  }
+
+  for (const overlay of overlays) {
+    drawImageOverlay(context, width, height, time, overlay);
+  }
+}
+
+function drawContainedFrame(context, sourceCanvas, width, height) {
+  const scale = Math.min(width / sourceCanvas.width, height / sourceCanvas.height);
+  const targetWidth = sourceCanvas.width * scale;
+  const targetHeight = sourceCanvas.height * scale;
+  const x = (width - targetWidth) / 2;
+  const y = (height - targetHeight) / 2;
+
+  context.drawImage(sourceCanvas, x, y, targetWidth, targetHeight);
 }
 
 function getOverlayTransitionAtTime(time, overlay) {

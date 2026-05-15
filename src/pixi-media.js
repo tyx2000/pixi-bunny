@@ -10,41 +10,51 @@ import {
 } from "pixi.js";
 import {
   createMediabunnyVideoFrameProvider,
-  exportVideoWithTextOverlay,
+  exportTimelineComposition,
   extractVideoFramesWithMediabunny,
 } from "./util.js";
 import fogImageUrl from "./assets/fog.jpg";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 660;
-const MEDIA_PADDING = 36;
+const HEADER_HEIGHT = 60;
+const MEDIA_PADDING = 12;
+const PREVIEW_HEIGHT = Math.round(VIEW_HEIGHT * 0.8);
+const TIMELINE_PANEL_HEIGHT = VIEW_HEIGHT - PREVIEW_HEIGHT;
 const BAR_COUNT = 48;
-const TIMELINE_X = 116;
-const TIMELINE_Y = VIEW_HEIGHT - 188;
-const TIMELINE_WIDTH = VIEW_WIDTH - TIMELINE_X * 2;
-const TIMELINE_HEIGHT = 8;
+const TIMELINE_X = MEDIA_PADDING + 72;
+const TIMELINE_HEIGHT = 3;
 const TIMELINE_HIT_HEIGHT = 42;
-const EDITOR_PANEL_X = 54;
-const EDITOR_PANEL_Y = VIEW_HEIGHT - 132;
-const EDITOR_PANEL_WIDTH = VIEW_WIDTH - EDITOR_PANEL_X * 2;
-const EDITOR_PANEL_HEIGHT = 106;
-const TRACK_LABEL_WIDTH = 82;
-const VIDEO_TRACK_X = EDITOR_PANEL_X + TRACK_LABEL_WIDTH;
-const VIDEO_TRACK_Y = EDITOR_PANEL_Y + 34;
-const VIDEO_TRACK_WIDTH = EDITOR_PANEL_WIDTH - TRACK_LABEL_WIDTH - 18;
-const VIDEO_TRACK_HEIGHT = 58;
+const PREVIEW_CONTROL_HEIGHT = 34;
+const PREVIEW_CONTROL_GAP = 10;
+const PREVIEW_MEDIA_CONTROL_GAP = 12;
+const PREVIEW_PLAY_BUTTON_WIDTH = 44;
+const PREVIEW_ACTION_BUTTON_WIDTH = 54;
+const PREVIEW_TIMECODE_WIDTH = 148;
+const PREVIEW_PROGRESS_MIN_WIDTH = 160;
+const EDITOR_PANEL_X = 0;
+const EDITOR_PANEL_Y = PREVIEW_HEIGHT;
+const EDITOR_PANEL_HEADER_HEIGHT = 26;
+const TRACK_LABEL_WIDTH = 76;
+const TRACK_ROW_HEIGHT = 60;
+const TRACK_ROW_GAP = 8;
+const RULER_TRACK_GAP = 10;
+const RULER_LABEL_HEIGHT = 16;
+const VIDEO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
+const AUDIO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
+const IMAGE_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
 const VIDEO_THUMB_WIDTH = 92;
-const VIDEO_THUMB_HEIGHT = 52;
+const VIDEO_THUMB_HEIGHT = VIDEO_TRACK_HEIGHT - 8;
 const TIMELINE_PIXELS_PER_SECOND = 10;
-const EDITOR_RULER_Y = EDITOR_PANEL_Y + 18;
-const EDITOR_PLAYHEAD_X = VIDEO_TRACK_X + VIDEO_TRACK_WIDTH / 2;
+const TRACK_OVERLAP_EPSILON = 0.02;
+const IMAGE_CLIP_DEFAULT_DURATION = 5;
 const VIDEO_FRAME_MIN_INTERVAL = 1 / 30;
 const TEXT_OVERLAY_INTERVALS = [
   { duration: 4, startTime: 2 },
   { duration: 7, startTime: 10 },
 ];
 const TEXT_OVERLAY_VALUE = "Pixi text";
-const IMAGE_OVERLAY_INTERVAL = { duration: 10, startTime: 4 };
+const TEXT_OVERLAY_DEFAULT_DURATION = 5;
 const IMAGE_OVERLAY_MIN_WIDTH = 48;
 const IMAGE_OVERLAY_HANDLE_RADIUS = 8;
 const OVERLAY_FADE_SECONDS = 0.35;
@@ -63,10 +73,13 @@ const AUDIO_EXTENSIONS = new Set([
 ]);
 
 export async function startPixiMedia() {
+  document.body.classList.add("pixi-media-page");
+
   const canvas = document.getElementById("app-canvas");
   const fileName = document.getElementById("moves-count");
   const statusText = document.getElementById("status-text");
   const chooseButton = document.getElementById("shuffle-button");
+  const hud = document.getElementById("hud");
   const fileLabel = fileName?.closest("span")?.firstChild;
 
   if (!(canvas instanceof HTMLCanvasElement)) {
@@ -76,7 +89,8 @@ export async function startPixiMedia() {
   if (
     !(fileName instanceof HTMLElement) ||
     !(statusText instanceof HTMLElement) ||
-    !(chooseButton instanceof HTMLButtonElement)
+    !(chooseButton instanceof HTMLButtonElement) ||
+    !(hud instanceof HTMLElement)
   ) {
     throw new Error("Media viewer HUD elements were not found.");
   }
@@ -85,16 +99,58 @@ export async function startPixiMedia() {
     fileLabel.textContent = "File: ";
   }
 
-  document.documentElement.style.setProperty("--game-aspect", `${VIEW_WIDTH} / ${VIEW_HEIGHT}`);
-  chooseButton.textContent = "Choose media";
+  document.documentElement.style.setProperty("--game-aspect", `${VIEW_WIDTH} / ${PREVIEW_HEIGHT}`);
+  chooseButton.textContent = "媒体文件";
   fileName.textContent = "none";
   statusText.textContent = "Image, video, or audio";
 
   const exportButton = document.createElement("button");
   exportButton.type = "button";
-  exportButton.textContent = "Export";
+  exportButton.textContent = "导出";
   exportButton.disabled = true;
-  chooseButton.insertAdjacentElement("beforebegin", exportButton);
+
+  const subtitleButton = document.createElement("button");
+  subtitleButton.type = "button";
+  subtitleButton.textContent = "字幕";
+
+  const subtitleTextInput = document.createElement("input");
+  subtitleTextInput.type = "text";
+  subtitleTextInput.value = TEXT_OVERLAY_VALUE;
+  subtitleTextInput.ariaLabel = "字幕文本";
+
+  const subtitleSizeSelect = createSelect("字幕字号", ["28", "36", "42", "48", "56", "64"], "42");
+  const subtitleFontSelect = createSelect(
+    "字幕字体",
+    ["Inter", "Arial", "Georgia", "Times New Roman", "Courier New"],
+    "Inter"
+  );
+  const subtitleStyleSelect = createSelect(
+    "字幕风格",
+    ["Regular", "Bold", "Italic", "Bold Italic"],
+    "Bold"
+  );
+  const subtitleColorInput = document.createElement("input");
+  subtitleColorInput.type = "color";
+  subtitleColorInput.value = "#ffffff";
+  subtitleColorInput.ariaLabel = "字幕颜色";
+
+  const toolbarLeft = document.createElement("div");
+  toolbarLeft.className = "media-toolbar-left";
+  const toolbarRight = document.createElement("div");
+  toolbarRight.className = "media-toolbar-right";
+  const subtitleControls = document.createElement("div");
+  subtitleControls.className = "subtitle-controls";
+
+  subtitleControls.append(
+    subtitleTextInput,
+    subtitleSizeSelect,
+    subtitleFontSelect,
+    subtitleStyleSelect,
+    subtitleColorInput
+  );
+  toolbarLeft.append(chooseButton, subtitleButton, subtitleControls);
+  toolbarRight.append(exportButton);
+  hud.append(toolbarLeft, toolbarRight);
 
   const input = document.createElement("input");
   input.type = "file";
@@ -102,23 +158,40 @@ export async function startPixiMedia() {
   input.hidden = true;
   document.body.appendChild(input);
 
+  const timelineCanvas = document.createElement("canvas");
+  timelineCanvas.id = "timeline-canvas";
+  canvas.insertAdjacentElement("afterend", timelineCanvas);
+
   const app = new Application();
+  const timelineApp = new Application();
 
   await app.init({
     canvas,
     width: VIEW_WIDTH,
-    height: VIEW_HEIGHT,
+    height: PREVIEW_HEIGHT,
     backgroundColor: 0x0f172a,
     antialias: true,
     autoDensity: true,
     resolution: window.devicePixelRatio || 1,
   });
+
+  await timelineApp.init({
+    canvas: timelineCanvas,
+    width: VIEW_WIDTH,
+    height: TIMELINE_PANEL_HEIGHT,
+    backgroundColor: 0x101010,
+    antialias: true,
+    autoDensity: true,
+    resolution: window.devicePixelRatio || 1,
+  });
+  timelineApp.stop();
   maintainCanvasLayout();
 
   const overlayImageTexture = await Assets.load(fogImageUrl);
   const overlayImageElement = await loadImageElement(fogImageUrl);
 
   const scene = new Container();
+  const timelineScene = new Container();
   const mediaLayer = new Container();
   const textLayer = new Container();
   const overlayImageGroup = new Container();
@@ -134,14 +207,44 @@ export async function startPixiMedia() {
   const timelineTrack = new Graphics();
   const timelineFill = new Graphics();
   const timelineKnob = new Graphics();
+  const playPauseButton = new Container();
+  const playPauseButtonBackground = new Graphics();
+  const playPauseButtonIcon = new Graphics();
+  const splitButton = new Container();
+  const splitButtonBackground = new Graphics();
+  const splitButtonLabel = new Text({
+    text: "分割",
+    style: {
+      fill: "#f5f5f5",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 13,
+      fontWeight: "700",
+    },
+  });
+  const deleteButton = new Container();
+  const deleteButtonBackground = new Graphics();
+  const deleteButtonLabel = new Text({
+    text: "删除",
+    style: {
+      fill: "#f5f5f5",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 13,
+      fontWeight: "700",
+    },
+  });
   const editorTimeline = new Container();
   const editorTimelineBackground = new Graphics();
   const editorTimelineContent = new Container();
+  const editorTimelineTracks = new Container();
   const editorTimelineRuler = new Graphics();
   const editorTimelineRulerLabels = new Container();
   const editorTimelineFrames = new Container();
+  const editorTimelineAudioClips = new Container();
+  const editorTimelineImageClips = new Container();
+  const editorTimelineTrackLabels = new Container();
   const editorTimelinePlayhead = new Graphics();
   const editorTimelineMask = new Graphics();
+  const editorTimelineTrackMask = new Graphics();
   const editorTimelineLabel = new Text({
     text: "Video",
     style: {
@@ -158,6 +261,24 @@ export async function startPixiMedia() {
       fontFamily: "Inter, system-ui, sans-serif",
       fontSize: 12,
       fontWeight: "600",
+    },
+  });
+  const editorTimelineAudioLabel = new Text({
+    text: "Audio",
+    style: {
+      fill: "#cbd5e1",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 13,
+      fontWeight: "700",
+    },
+  });
+  const editorTimelineImageLabel = new Text({
+    text: "Image",
+    style: {
+      fill: "#cbd5e1",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 13,
+      fontWeight: "700",
     },
   });
   const currentTimeText = new Text({
@@ -209,61 +330,102 @@ export async function startPixiMedia() {
   });
 
   app.stage.addChild(scene);
-  scene.addChild(
-    mediaLayer,
-    textLayer,
-    overlay,
-    visualizer,
-    controlsLayer,
-    editorTimeline,
-    titleText,
-    detailText
-  );
+  timelineApp.stage.addChild(timelineScene);
+  scene.addChild(mediaLayer, textLayer, overlay, visualizer, controlsLayer, titleText, detailText);
+  timelineScene.addChild(editorTimeline);
   overlayImageGroup.addChild(
     overlayImageSprite,
     ...overlayImageHandles.map((handle) => handle.node)
   );
   textLayer.addChild(overlayImageGroup, overlayText);
   controlsLayer.addChild(timeline);
-  timeline.addChild(timelineTrack, timelineFill, timelineKnob, currentTimeText, durationText);
+  playPauseButton.addChild(playPauseButtonBackground, playPauseButtonIcon);
+  splitButton.addChild(splitButtonBackground, splitButtonLabel);
+  deleteButton.addChild(deleteButtonBackground, deleteButtonLabel);
+  timeline.addChild(
+    playPauseButton,
+    timelineTrack,
+    timelineFill,
+    timelineKnob,
+    currentTimeText,
+    durationText,
+    splitButton,
+    deleteButton
+  );
   editorTimelineContent.addChild(
     editorTimelineRuler,
     editorTimelineRulerLabels,
-    editorTimelineFrames
+    editorTimelineTracks
+  );
+  editorTimelineTracks.addChild(
+    editorTimelineFrames,
+    editorTimelineAudioClips,
+    editorTimelineImageClips
   );
   editorTimeline.addChild(
     editorTimelineBackground,
     editorTimelineContent,
     editorTimelinePlayhead,
     editorTimelineMask,
+    editorTimelineTrackMask,
+    editorTimelineTrackLabels,
     editorTimelineLabel,
+    editorTimelineAudioLabel,
+    editorTimelineImageLabel,
     editorTimelineStatus
   );
   editorTimelineContent.mask = editorTimelineMask;
+  editorTimelineTracks.mask = editorTimelineTrackMask;
+
+  let timelineScale = 1;
+  let timelineVerticalScroll = 0;
 
   timeline.visible = false;
   timeline.eventMode = "static";
   timeline.cursor = "pointer";
   timeline.hitArea = new Rectangle(
-    TIMELINE_X,
-    TIMELINE_Y - TIMELINE_HIT_HEIGHT / 2,
-    TIMELINE_WIDTH,
+    0,
+    getPreviewTimelineY() - TIMELINE_HIT_HEIGHT / 2,
+    getPreviewWidth(),
     TIMELINE_HIT_HEIGHT
   );
   currentTimeText.anchor.set(0, 0.5);
-  durationText.anchor.set(1, 0.5);
-  currentTimeText.position.set(TIMELINE_X, TIMELINE_Y + 28);
-  durationText.position.set(TIMELINE_X + TIMELINE_WIDTH, TIMELINE_Y + 28);
+  durationText.visible = false;
+  splitButtonLabel.anchor.set(0.5);
+  deleteButtonLabel.anchor.set(0.5);
+  playPauseButton.eventMode = "static";
+  playPauseButton.cursor = "pointer";
+  splitButton.eventMode = "static";
+  splitButton.cursor = "pointer";
+  deleteButton.eventMode = "static";
+  deleteButton.cursor = "pointer";
+  currentTimeText.position.set(getPreviewTimelineX(), getPreviewTimelineY() + 28);
+  durationText.position.set(
+    getPreviewTimelineX() + getPreviewTimelineWidth(),
+    getPreviewTimelineY() + 28
+  );
   editorTimeline.visible = false;
+  editorTimeline.eventMode = "static";
   editorTimelineLabel.anchor.set(0, 0.5);
-  editorTimelineLabel.position.set(EDITOR_PANEL_X + 14, VIDEO_TRACK_Y + VIDEO_TRACK_HEIGHT / 2);
+  editorTimelineLabel.visible = false;
+  editorTimelineLabel.position.set(EDITOR_PANEL_X + 14, getVideoTrackY() + VIDEO_TRACK_HEIGHT / 2);
+  editorTimelineAudioLabel.anchor.set(0, 0.5);
+  editorTimelineAudioLabel.visible = false;
+  editorTimelineAudioLabel.position.set(
+    EDITOR_PANEL_X + 14,
+    getVideoTrackY() + getTrackPitch() + AUDIO_TRACK_HEIGHT / 2
+  );
+  editorTimelineImageLabel.anchor.set(0, 0.5);
+  editorTimelineImageLabel.visible = false;
+  editorTimelineImageLabel.position.set(
+    EDITOR_PANEL_X + 14,
+    getVideoTrackY() + getTrackPitch() * 2 + IMAGE_TRACK_HEIGHT / 2
+  );
   editorTimelineStatus.anchor.set(0.5, 0.5);
-  editorTimelineStatus.position.set(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 14);
+  editorTimelineStatus.position.set(getEditorPlayheadX(), EDITOR_PANEL_Y + 14);
 
   titleText.anchor.set(0.5);
-  titleText.position.set(VIEW_WIDTH / 2, VIEW_HEIGHT / 2 - 22);
   detailText.anchor.set(0.5);
-  detailText.position.set(VIEW_WIDTH / 2, VIEW_HEIGHT / 2 + 18);
   overlayText.anchor.set(0.5);
   overlayText.eventMode = "static";
   overlayText.cursor = "grab";
@@ -287,15 +449,26 @@ export async function startPixiMedia() {
   let frequencyData = null;
   let currentKind = "empty";
   let isSeeking = false;
+  let playbackTime = 0;
+  let playbackPlaying = false;
   let videoFramePending = false;
   let videoFrameRequestId = 0;
   let videoTrackBuildId = 0;
   let videoTrackTextures = [];
+  let audioTrackGraphics = [];
+  let imageTrackTextures = [];
+  let videoTimelineClips = [];
+  let audioTimelineClips = [];
+  let imageTimelineClips = [];
+  let timelineObjectUrls = [];
   let videoTrackLoading = false;
   let editorTimelineRulerDuration = -1;
+  let editorTimelineRulerY = -1;
   let lastVideoFrameTime = -1;
   let wasPlayingBeforeSeek = false;
   let suppressNextCanvasToggle = false;
+  let timelineClipDrag = null;
+  let textOverlayIntervals = [];
   let textPositionInitialized = false;
   let textDragging = false;
   const textDragOffset = { x: 0, y: 0 };
@@ -309,15 +482,19 @@ export async function startPixiMedia() {
 
   function clearCurrentMedia() {
     app.stop();
+    playbackTime = 0;
+    playbackPlaying = false;
     videoFrameRequestId += 1;
     videoTrackBuildId += 1;
     videoFramePending = false;
     videoTrackLoading = false;
     lastVideoFrameTime = -1;
-    clearVideoTrackFrames();
+    timelineClipDrag = null;
+    clearTimelineTracks();
     currentVideoFile = null;
     exportButton.disabled = true;
     isExporting = false;
+    textOverlayIntervals = [];
     textPositionInitialized = false;
     textDragging = false;
     overlayText.visible = false;
@@ -372,6 +549,31 @@ export async function startPixiMedia() {
   }
 
   async function loadMedia(file) {
+    const kind = getMediaKind(file);
+
+    if (hasPrimaryVideoTrack()) {
+      try {
+        statusText.textContent = "Adding";
+
+        if (kind === "audio") {
+          await addAudioTimelineClip(file);
+        } else if (kind === "image") {
+          await addImageTimelineClip(file);
+        } else if (kind === "video") {
+          await appendVideoTimelineClip(file);
+        } else {
+          throw new Error("Unsupported file type.");
+        }
+
+        drawEditorTimeline();
+        app.render();
+      } catch (error) {
+        statusText.textContent = error instanceof Error ? error.message : "Failed to add";
+      }
+
+      return;
+    }
+
     clearCurrentMedia();
 
     objectUrl = URL.createObjectURL(file);
@@ -379,8 +581,6 @@ export async function startPixiMedia() {
     statusText.textContent = "Loading";
 
     try {
-      const kind = getMediaKind(file);
-
       if (kind === "image") {
         await loadImage(file);
       } else if (kind === "video") {
@@ -440,11 +640,20 @@ export async function startPixiMedia() {
     mediaLayer.addChild(mediaSprite);
     currentKind = "video";
     currentVideoFile = file;
+    playbackTime = 0;
+    playbackPlaying = false;
     exportButton.disabled = false;
+    videoTimelineClips = [
+      {
+        audioElement: video,
+        duration: videoFrameProvider.duration,
+        file,
+        provider: videoFrameProvider,
+        startTime: 0,
+      },
+    ];
     statusText.textContent = `Video ${videoFrameProvider.width}x${videoFrameProvider.height}`;
-    video.addEventListener("seeked", handleMediaSeeked);
-    video.addEventListener("ended", handleMediaEnded);
-    startVideoTrackBuild(file);
+    startVideoTrackBuild();
     statusText.textContent = "Click canvas to play";
   }
 
@@ -472,6 +681,101 @@ export async function startPixiMedia() {
     mediaElement.addEventListener("ended", handleMediaEnded);
   }
 
+  function hasPrimaryVideoTrack() {
+    return currentKind === "video" && videoFrameProvider && mediaElement;
+  }
+
+  async function appendVideoTimelineClip(file) {
+    const provider = await createMediabunnyVideoFrameProvider(file);
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+
+    timelineObjectUrls.push(url);
+    video.loop = false;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.src = url;
+
+    try {
+      await provider.drawFrameAt(0);
+      await waitForMediaReady(video, "loadedmetadata", "video");
+
+      videoTimelineClips.push({
+        audioElement: video,
+        duration: provider.duration,
+        file,
+        provider,
+        startTime: getVideoTimelineDuration(),
+      });
+
+      startVideoTrackBuild();
+      drawEditorTimeline();
+      statusText.textContent = "Video appended";
+    } catch (error) {
+      provider.dispose();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+      timelineObjectUrls = timelineObjectUrls.filter((item) => item !== url);
+      throw error;
+    }
+  }
+
+  async function addAudioTimelineClip(file) {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio(url);
+
+    timelineObjectUrls.push(url);
+    audio.loop = false;
+    audio.preload = "auto";
+    await waitForMediaReady(audio, "loadedmetadata", "audio");
+
+    const clip = {
+      audioElement: audio,
+      duration: Number.isFinite(audio.duration) ? audio.duration : 0,
+      file,
+      startTime: getInsertionTime(),
+      trackIndex: getNextTrackIndex(audioTimelineClips),
+    };
+
+    audio.pause();
+    audioTimelineClips.push(clip);
+    renderTimelineClipTracks();
+    drawEditorTimeline();
+    syncTimelineAudio();
+    statusText.textContent = "Audio added";
+
+    void drawAudioSpectrum(clip).catch(() => {
+      renderTimelineClipTracks();
+      app.render();
+    });
+  }
+
+  async function addImageTimelineClip(file) {
+    const url = URL.createObjectURL(file);
+    const texture = await Assets.load({
+      src: url,
+      parser: "texture",
+      data: { mime: file.type },
+    });
+    const imageElement = await loadImageElement(url);
+    const clip = {
+      duration: IMAGE_CLIP_DEFAULT_DURATION,
+      imageElement,
+      startTime: getInsertionTime(),
+      texture,
+      trackIndex: getNextTrackIndex(imageTimelineClips),
+    };
+
+    timelineObjectUrls.push(url);
+    imageTimelineClips.push(clip);
+    renderTimelineClipTracks();
+    imagePositionInitialized = false;
+    drawEditorTimeline();
+    statusText.textContent = "Image added";
+  }
+
   function fitMediaSprite() {
     if (!mediaSprite) {
       return;
@@ -485,17 +789,298 @@ export async function startPixiMedia() {
       (mediaElement instanceof HTMLVideoElement ? mediaElement.videoHeight : 0);
     const sourceWidth = mediaTexture?.width || videoWidth || 1;
     const sourceHeight = mediaTexture?.height || videoHeight || 1;
-    const maxWidth = VIEW_WIDTH - MEDIA_PADDING * 2;
-    const previewBottom = isSeekableMedia()
-      ? TIMELINE_Y - TIMELINE_HIT_HEIGHT
-      : VIEW_HEIGHT - MEDIA_PADDING;
-    const maxHeight = Math.max(1, previewBottom - MEDIA_PADDING);
+    const maxWidth = getPreviewWidth() - MEDIA_PADDING * 2;
+    const previewTop = MEDIA_PADDING;
+    const previewBottom = getPreviewContentBottom();
+    const maxHeight = Math.max(1, previewBottom - previewTop);
     const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
 
     mediaSprite.scale.set(scale);
-    mediaSprite.position.set(VIEW_WIDTH / 2, MEDIA_PADDING + maxHeight / 2);
+    mediaSprite.position.set(getPreviewWidth() / 2, previewTop + maxHeight / 2);
     updateImageOverlayPosition();
     updateTextOverlayPosition();
+  }
+
+  function getPlaybackDuration() {
+    if (currentKind === "video") {
+      return getTimelineDuration();
+    }
+
+    return mediaElement && Number.isFinite(mediaElement.duration) ? mediaElement.duration : 0;
+  }
+
+  function getCurrentPlaybackTime() {
+    if (currentKind === "video") {
+      return playbackTime;
+    }
+
+    return mediaElement && Number.isFinite(mediaElement.currentTime) ? mediaElement.currentTime : 0;
+  }
+
+  function setTimelinePlaybackTime(value, forceFrame = true) {
+    const duration = getPlaybackDuration();
+
+    playbackTime = Math.min(Math.max(Number.isFinite(value) ? value : 0, 0), duration);
+    updateVideoTexture(forceFrame);
+    syncTimelineAudio();
+    drawTimeline();
+    drawEditorTimeline();
+  }
+
+  function getActiveVideoTimelineClip(time = playbackTime) {
+    return (
+      videoTimelineClips.find(
+        (clip) => time >= clip.startTime && time < clip.startTime + clip.duration
+      ) || null
+    );
+  }
+
+  function getClipTrackIndex(clip) {
+    return Math.max(0, Number.isFinite(clip?.trackIndex) ? clip.trackIndex : 0);
+  }
+
+  function getTimelineTrackCount(clips) {
+    if (clips.length === 0) {
+      return 1;
+    }
+
+    return Math.max(1, ...clips.map((clip) => getClipTrackIndex(clip) + 1));
+  }
+
+  function getNextTrackIndex(clips, excludedClip = null) {
+    const trackIndexes = clips
+      .filter((clip) => clip !== excludedClip)
+      .map((clip) => getClipTrackIndex(clip));
+
+    return trackIndexes.length === 0 ? 0 : Math.max(...trackIndexes) + 1;
+  }
+
+  function getAudioTrackCount() {
+    return getTimelineTrackCount(audioTimelineClips);
+  }
+
+  function getImageTrackCount() {
+    return getTimelineTrackCount(imageTimelineClips);
+  }
+
+  function getEditorPanelRowCount() {
+    return 1 + getAudioTrackCount() + getImageTrackCount();
+  }
+
+  function getPreviewWidth() {
+    return Math.max(1, app.screen.width || VIEW_WIDTH);
+  }
+
+  function getPreviewHeight() {
+    return Math.max(1, app.screen.height || PREVIEW_HEIGHT);
+  }
+
+  function getPreviewTimelineX() {
+    const leftControlsWidth = PREVIEW_PLAY_BUTTON_WIDTH + PREVIEW_CONTROL_GAP * 2;
+
+    return MEDIA_PADDING + leftControlsWidth;
+  }
+
+  function getPreviewTimelineY() {
+    return getPreviewControlY() + PREVIEW_CONTROL_HEIGHT / 2;
+  }
+
+  function getPreviewTimelineWidth() {
+    const x = getPreviewTimelineX();
+    const rightControlsWidth =
+      PREVIEW_TIMECODE_WIDTH +
+      PREVIEW_ACTION_BUTTON_WIDTH * 2 +
+      PREVIEW_CONTROL_GAP * 4 +
+      MEDIA_PADDING;
+
+    return Math.max(PREVIEW_PROGRESS_MIN_WIDTH, getPreviewWidth() - x - rightControlsWidth);
+  }
+
+  function getPreviewControlY() {
+    return Math.max(MEDIA_PADDING, getPreviewHeight() - MEDIA_PADDING - PREVIEW_CONTROL_HEIGHT);
+  }
+
+  function getPreviewContentBottom() {
+    return Math.max(MEDIA_PADDING + 1, getPreviewControlY() - PREVIEW_MEDIA_CONTROL_GAP);
+  }
+
+  function getPreviewContentCenterY() {
+    return MEDIA_PADDING + (getPreviewContentBottom() - MEDIA_PADDING) / 2;
+  }
+
+  function getPreviewTimecodeX() {
+    return getPreviewTimelineX() + getPreviewTimelineWidth() + PREVIEW_CONTROL_GAP;
+  }
+
+  function getPreviewSplitButtonX() {
+    return getPreviewTimecodeX() + PREVIEW_TIMECODE_WIDTH + PREVIEW_CONTROL_GAP;
+  }
+
+  function getPreviewDeleteButtonX() {
+    return getPreviewSplitButtonX() + PREVIEW_ACTION_BUTTON_WIDTH + PREVIEW_CONTROL_GAP;
+  }
+
+  function layoutPreviewText() {
+    const centerY = getPreviewContentCenterY();
+
+    titleText.position.set(getPreviewWidth() / 2, centerY - 22);
+    detailText.position.set(getPreviewWidth() / 2, centerY + 18);
+    detailText.style.wordWrapWidth = Math.max(1, getPreviewWidth() - MEDIA_PADDING * 2);
+  }
+
+  function getTimelineViewportWidth() {
+    return Math.max(VIEW_WIDTH, timelineApp.screen.width / timelineScale);
+  }
+
+  function getTimelineViewportHeight() {
+    return Math.max(TIMELINE_PANEL_HEIGHT, timelineApp.screen.height / timelineScale);
+  }
+
+  function getEditorPanelWidth() {
+    return Math.max(1, getTimelineViewportWidth() - EDITOR_PANEL_X * 2);
+  }
+
+  function getEditorPanelHeight() {
+    return getTimelineViewportHeight();
+  }
+
+  function getEditorPanelY() {
+    return EDITOR_PANEL_Y;
+  }
+
+  function getEditorRulerY() {
+    return getEditorPanelY() + 18;
+  }
+
+  function getVideoTrackY() {
+    return getEditorRulerY() + RULER_LABEL_HEIGHT + RULER_TRACK_GAP;
+  }
+
+  function getVideoTrackX() {
+    return EDITOR_PANEL_X + TRACK_LABEL_WIDTH;
+  }
+
+  function getVideoTrackWidth() {
+    return Math.max(1, getEditorPanelWidth() - TRACK_LABEL_WIDTH - 18);
+  }
+
+  function getEditorPlayheadX() {
+    return getVideoTrackX() + getVideoTrackWidth() / 2;
+  }
+
+  function getAudioTrackY(trackIndex = 0) {
+    return getVideoTrackY() + TRACK_ROW_HEIGHT + TRACK_ROW_GAP + trackIndex * getTrackPitch();
+  }
+
+  function getImageTrackY(trackIndex = 0) {
+    return getAudioTrackY(getAudioTrackCount()) + trackIndex * getTrackPitch();
+  }
+
+  function getTrackPitch() {
+    return TRACK_ROW_HEIGHT + TRACK_ROW_GAP;
+  }
+
+  function drawCanvasIntoPreview(sourceCanvas) {
+    const previewCanvas = videoFrameProvider?.canvas;
+    const context = previewCanvas?.getContext("2d", { alpha: false });
+
+    if (!previewCanvas || !context) {
+      return;
+    }
+
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+    if (!sourceCanvas) {
+      return;
+    }
+
+    const scale = Math.min(
+      previewCanvas.width / sourceCanvas.width,
+      previewCanvas.height / sourceCanvas.height
+    );
+    const width = sourceCanvas.width * scale;
+    const height = sourceCanvas.height * scale;
+    const x = (previewCanvas.width - width) / 2;
+    const y = (previewCanvas.height - height) / 2;
+
+    context.drawImage(sourceCanvas, x, y, width, height);
+  }
+
+  function syncTimelineAudio() {
+    for (const clip of videoTimelineClips) {
+      syncClipMediaElement(clip.audioElement, clip.startTime, clip.duration);
+    }
+
+    for (const clip of audioTimelineClips) {
+      syncClipMediaElement(clip.audioElement, clip.startTime, clip.duration);
+    }
+  }
+
+  function syncClipMediaElement(element, startTime, duration) {
+    if (!element) {
+      return;
+    }
+
+    const localTime = playbackTime - startTime;
+    const shouldPlay = playbackPlaying && localTime >= 0 && localTime < duration && duration > 0;
+
+    if (!shouldPlay) {
+      element.pause();
+      return;
+    }
+
+    const safeTime = Math.min(Math.max(localTime, 0), Math.max(0, duration - 0.02));
+
+    if (Number.isFinite(element.duration) && Math.abs(element.currentTime - safeTime) > 0.08) {
+      element.currentTime = safeTime;
+    }
+
+    if (element.paused) {
+      void element.play().catch(() => {
+        element.pause();
+      });
+    }
+  }
+
+  function pauseTimelineAudio() {
+    for (const clip of videoTimelineClips) {
+      clip.audioElement?.pause();
+    }
+
+    for (const clip of audioTimelineClips) {
+      clip.audioElement?.pause();
+    }
+  }
+
+  async function startTimelinePlayback() {
+    if (currentKind !== "video") {
+      return;
+    }
+
+    const duration = getPlaybackDuration();
+
+    if (duration <= 0) {
+      return;
+    }
+
+    if (playbackTime >= duration - 0.001) {
+      playbackTime = 0;
+    }
+
+    playbackPlaying = true;
+    syncTimelineAudio();
+    statusText.textContent = "Click canvas to pause";
+    app.start();
+  }
+
+  function pauseTimelinePlayback(status = "Paused") {
+    playbackPlaying = false;
+    pauseTimelineAudio();
+    statusText.textContent = status;
+    app.stop();
+    renderScene();
+    app.render();
   }
 
   function getMediaSpriteRect() {
@@ -517,11 +1102,11 @@ export async function startPixiMedia() {
   }
 
   function getCurrentOverlayTransition(intervals) {
-    if (currentKind !== "video" || !mediaElement || !Number.isFinite(mediaElement.currentTime)) {
+    if (currentKind !== "video") {
       return { alpha: 0, yScale: 0 };
     }
 
-    return getOverlayTransitionAtTime(mediaElement.currentTime, intervals, OVERLAY_FADE_SECONDS);
+    return getOverlayTransitionAtTime(playbackTime, intervals, OVERLAY_FADE_SECONDS);
   }
 
   function updateTextOverlayPosition() {
@@ -533,13 +1118,13 @@ export async function startPixiMedia() {
     }
 
     if (!textPositionInitialized) {
-      overlayText.position.set(rect.left + rect.width / 2, rect.top + rect.height * 0.76);
+      overlayText.position.set(rect.left + rect.width / 2, rect.top + rect.height * 0.82);
       textPositionInitialized = true;
     }
 
     overlayText.scale.set(1, 1);
     clampTextToMediaRect();
-    const transition = getCurrentOverlayTransition(TEXT_OVERLAY_INTERVALS);
+    const transition = getCurrentOverlayTransition(textOverlayIntervals);
 
     overlayText.alpha = transition.alpha;
     overlayText.scale.x = transition.yScale;
@@ -548,11 +1133,14 @@ export async function startPixiMedia() {
 
   function updateImageOverlayPosition() {
     const rect = getMediaSpriteRect();
+    const activeClip = getActiveImageTimelineClip();
 
-    if (!rect || currentKind !== "video") {
+    if (!rect || currentKind !== "video" || !activeClip) {
       overlayImageGroup.visible = false;
       return;
     }
+
+    overlayImageSprite.texture = activeClip.texture;
 
     if (!imagePositionInitialized) {
       const aspectRatio = getOverlayImageAspectRatio();
@@ -568,7 +1156,9 @@ export async function startPixiMedia() {
 
     clampImageToMediaRect();
     layoutImageOverlay();
-    const transition = getCurrentOverlayTransition([IMAGE_OVERLAY_INTERVAL]);
+    const transition = getCurrentOverlayTransition([
+      { duration: activeClip.duration, startTime: activeClip.startTime },
+    ]);
 
     overlayImageGroup.alpha = transition.alpha;
     overlayImageSprite.scale.x *= transition.yScale;
@@ -596,8 +1186,11 @@ export async function startPixiMedia() {
   }
 
   function getOverlayImageAspectRatio() {
-    const width = overlayImageTexture.width || overlayImageElement.naturalWidth || 1;
-    const height = overlayImageTexture.height || overlayImageElement.naturalHeight || 1;
+    const activeClip = getActiveImageTimelineClip();
+    const texture = activeClip?.texture || overlayImageTexture;
+    const element = activeClip?.imageElement || overlayImageElement;
+    const width = texture.width || element.naturalWidth || 1;
+    const height = texture.height || element.naturalHeight || 1;
 
     return width / height;
   }
@@ -637,17 +1230,20 @@ export async function startPixiMedia() {
   }
 
   function drawEmptyBackground() {
+    const previewWidth = getPreviewWidth();
+    const previewHeight = getPreviewHeight();
+
+    layoutPreviewText();
     overlay.clear();
-    overlay.rect(0, 0, VIEW_WIDTH, VIEW_HEIGHT).fill(0x0f172a);
+    overlay.rect(0, 0, previewWidth, previewHeight).fill(0x050505);
     overlay
       .rect(
         MEDIA_PADDING,
         MEDIA_PADDING,
-        VIEW_WIDTH - MEDIA_PADDING * 2,
-        VIEW_HEIGHT - MEDIA_PADDING * 2
+        previewWidth - MEDIA_PADDING * 2,
+        getPreviewContentBottom() - MEDIA_PADDING
       )
-      .fill({ color: 0x111827, alpha: 0.9 })
-      .stroke({ color: 0x334155, width: 2 });
+      .fill({ color: 0x000000, alpha: 0.9 });
     visualizer.clear();
   }
 
@@ -658,15 +1254,19 @@ export async function startPixiMedia() {
 
     analyser.getByteFrequencyData(frequencyData);
     overlay.clear();
-    overlay.rect(0, 0, VIEW_WIDTH, VIEW_HEIGHT).fill(0x0f172a);
-    overlay.circle(VIEW_WIDTH / 2, 168, 72).fill({ color: 0x2563eb, alpha: 0.26 });
-    overlay.circle(VIEW_WIDTH / 2, 168, 44).fill({ color: 0x38bdf8, alpha: 0.72 });
+    overlay.rect(0, 0, getPreviewWidth(), getPreviewHeight()).fill(0x0f172a);
+    overlay
+      .circle(getPreviewWidth() / 2, getPreviewHeight() * 0.32, 72)
+      .fill({ color: 0x2563eb, alpha: 0.26 });
+    overlay
+      .circle(getPreviewWidth() / 2, getPreviewHeight() * 0.32, 44)
+      .fill({ color: 0x38bdf8, alpha: 0.72 });
 
     visualizer.clear();
-    const areaX = 92;
-    const areaY = 302;
-    const areaWidth = VIEW_WIDTH - areaX * 2;
-    const areaHeight = 142;
+    const areaX = Math.max(48, getPreviewWidth() * 0.1);
+    const areaY = getPreviewHeight() * 0.58;
+    const areaWidth = getPreviewWidth() - areaX * 2;
+    const areaHeight = Math.max(72, getPreviewHeight() * 0.22);
     const gap = 4;
     const barWidth = (areaWidth - gap * (BAR_COUNT - 1)) / BAR_COUNT;
 
@@ -682,11 +1282,11 @@ export async function startPixiMedia() {
   }
 
   function updateVideoTexture(force = false) {
-    if (currentKind !== "video" || !mediaTexture?.source || !videoFrameProvider || !mediaElement) {
+    if (currentKind !== "video" || !mediaTexture?.source || !videoFrameProvider) {
       return;
     }
 
-    const frameTime = mediaElement.currentTime;
+    const frameTime = playbackTime;
 
     if (!force && Math.abs(frameTime - lastVideoFrameTime) < VIDEO_FRAME_MIN_INTERVAL) {
       return;
@@ -707,18 +1307,40 @@ export async function startPixiMedia() {
     videoFramePending = true;
     lastVideoFrameTime = frameTime;
 
-    videoFrameProvider
-      .drawFrameAt(frameTime)
+    const clip = getActiveVideoTimelineClip(frameTime);
+
+    if (!clip?.provider) {
+      drawCanvasIntoPreview(null);
+      mediaTexture.source.update();
+      mediaTexture.update?.();
+      fitMediaSprite();
+      updateImageOverlayPosition();
+      updateTextOverlayPosition();
+      drawTimeline();
+      drawEditorTimeline();
+      videoFramePending = false;
+      app.render();
+      return;
+    }
+
+    clip.provider
+      .drawFrameAt(frameTime - clip.startTime)
       .then((frame) => {
         if (requestId !== videoFrameRequestId || currentKind !== "video" || !frame) {
           return;
         }
 
+        if (frame.canvas !== videoFrameProvider.canvas) {
+          drawCanvasIntoPreview(frame.canvas);
+        }
+
         mediaTexture?.source?.update?.();
         mediaTexture?.update?.();
         fitMediaSprite();
+        updateImageOverlayPosition();
         updateTextOverlayPosition();
         drawTimeline();
+        drawEditorTimeline();
         app.render();
       })
       .catch((error) => {
@@ -736,8 +1358,7 @@ export async function startPixiMedia() {
 
         if (
           currentKind === "video" &&
-          mediaElement &&
-          Math.abs(mediaElement.currentTime - lastVideoFrameTime) >= VIDEO_FRAME_MIN_INTERVAL
+          Math.abs(playbackTime - lastVideoFrameTime) >= VIDEO_FRAME_MIN_INTERVAL
         ) {
           updateVideoTexture();
         }
@@ -745,8 +1366,12 @@ export async function startPixiMedia() {
   }
 
   function isSeekableMedia() {
+    if (currentKind === "video") {
+      return hasPrimaryVideoTrack() && getPlaybackDuration() > 0;
+    }
+
     return (
-      (currentKind === "video" || currentKind === "audio") &&
+      currentKind === "audio" &&
       mediaElement &&
       Number.isFinite(mediaElement.duration) &&
       mediaElement.duration > 0
@@ -759,35 +1384,164 @@ export async function startPixiMedia() {
       return;
     }
 
-    const duration = mediaElement.duration;
-    const currentTime = Math.min(Math.max(mediaElement.currentTime, 0), duration);
+    const duration = getPlaybackDuration();
+    const currentTime = Math.min(Math.max(getCurrentPlaybackTime(), 0), duration);
     const progress = currentTime / duration;
-    const knobX = TIMELINE_X + TIMELINE_WIDTH * progress;
-    const barY = TIMELINE_Y - TIMELINE_HEIGHT / 2;
+    const timelineX = getPreviewTimelineX();
+    const timelineY = getPreviewTimelineY();
+    const timelineWidth = getPreviewTimelineWidth();
+    const knobX = timelineX + timelineWidth * progress;
+    const barY = timelineY - TIMELINE_HEIGHT / 2;
 
     timeline.visible = true;
+    drawPreviewPlaybackControls(currentTime, duration);
+    timeline.hitArea = new Rectangle(
+      0,
+      timelineY - TIMELINE_HIT_HEIGHT / 2,
+      getPreviewWidth(),
+      TIMELINE_HIT_HEIGHT
+    );
     timelineTrack.clear();
     timelineTrack
-      .roundRect(TIMELINE_X, barY, TIMELINE_WIDTH, TIMELINE_HEIGHT, TIMELINE_HEIGHT / 2)
-      .fill({ color: 0x0f172a, alpha: 0.9 })
-      .stroke({ color: 0x475569, width: 1 });
+      .roundRect(timelineX, barY, timelineWidth, TIMELINE_HEIGHT, TIMELINE_HEIGHT / 2)
+      .fill(0x111111)
+      .stroke({ color: 0xffffff, width: 1 });
 
     timelineFill.clear();
     timelineFill
       .roundRect(
-        TIMELINE_X,
+        timelineX,
         barY,
-        Math.max(0, knobX - TIMELINE_X),
+        Math.max(0, knobX - timelineX),
         TIMELINE_HEIGHT,
         TIMELINE_HEIGHT / 2
       )
-      .fill(0x38bdf8);
+      .fill(0xffffff);
 
     timelineKnob.clear();
-    timelineKnob.circle(knobX, TIMELINE_Y, 11).fill(0xf8fafc).stroke({ color: 0x0284c7, width: 3 });
+    timelineKnob
+      .moveTo(knobX, timelineY - 14)
+      .lineTo(knobX, timelineY + 14)
+      .stroke({ color: 0xffffff, width: 3 });
 
-    currentTimeText.text = formatTime(currentTime);
-    durationText.text = formatTime(duration);
+    currentTimeText.text = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+    currentTimeText.position.set(getPreviewTimecodeX(), timelineY);
+  }
+
+  function drawPreviewPlaybackControls() {
+    const y = getPreviewControlY();
+    const centerY = y + PREVIEW_CONTROL_HEIGHT / 2;
+
+    drawPlayPauseButton(y);
+    drawPreviewActionButton(
+      splitButton,
+      splitButtonBackground,
+      splitButtonLabel,
+      getPreviewSplitButtonX(),
+      y
+    );
+    drawPreviewActionButton(
+      deleteButton,
+      deleteButtonBackground,
+      deleteButtonLabel,
+      getPreviewDeleteButtonX(),
+      y
+    );
+
+    currentTimeText.style.fill = "#f5f5f5";
+    currentTimeText.style.fontSize = 13;
+    currentTimeText.anchor.set(0, 0.5);
+    currentTimeText.hitArea = new Rectangle(0, 0, PREVIEW_TIMECODE_WIDTH, PREVIEW_CONTROL_HEIGHT);
+    durationText.visible = false;
+    playPauseButton.position.set(MEDIA_PADDING, y);
+    splitButton.position.set(getPreviewSplitButtonX(), y);
+    deleteButton.position.set(getPreviewDeleteButtonX(), y);
+    splitButtonLabel.position.set(PREVIEW_ACTION_BUTTON_WIDTH / 2, PREVIEW_CONTROL_HEIGHT / 2);
+    deleteButtonLabel.position.set(PREVIEW_ACTION_BUTTON_WIDTH / 2, PREVIEW_CONTROL_HEIGHT / 2);
+    playPauseButton.hitArea = new Rectangle(
+      0,
+      0,
+      PREVIEW_PLAY_BUTTON_WIDTH,
+      PREVIEW_CONTROL_HEIGHT
+    );
+    splitButton.hitArea = new Rectangle(0, 0, PREVIEW_ACTION_BUTTON_WIDTH, PREVIEW_CONTROL_HEIGHT);
+    deleteButton.hitArea = new Rectangle(0, 0, PREVIEW_ACTION_BUTTON_WIDTH, PREVIEW_CONTROL_HEIGHT);
+    playPauseButtonIcon.position.set(PREVIEW_PLAY_BUTTON_WIDTH / 2, centerY - y);
+  }
+
+  function drawPlayPauseButton(y) {
+    playPauseButtonBackground.clear();
+    playPauseButtonBackground
+      .roundRect(0, 0, PREVIEW_PLAY_BUTTON_WIDTH, PREVIEW_CONTROL_HEIGHT, 6)
+      .fill({ color: 0xffffff, alpha: 0.001 });
+
+    playPauseButtonIcon.clear();
+    if (currentKind === "video" ? playbackPlaying : Boolean(mediaElement && !mediaElement.paused)) {
+      playPauseButtonIcon.rect(-6, -8, 4, 16).fill(0xffffff);
+      playPauseButtonIcon.rect(3, -8, 4, 16).fill(0xffffff);
+    } else {
+      playPauseButtonIcon.poly([-5, -9, -5, 9, 9, 0], true).fill(0xffffff);
+    }
+
+    playPauseButton.position.set(MEDIA_PADDING, y);
+  }
+
+  function drawPreviewActionButton(container, background, label, x, y) {
+    background.clear();
+    background
+      .roundRect(0, 0, PREVIEW_ACTION_BUTTON_WIDTH, PREVIEW_CONTROL_HEIGHT, 6)
+      .fill({ color: 0xffffff, alpha: 0.001 });
+
+    label.visible = false;
+    if (label.text === "分割") {
+      drawSplitIcon(background);
+    } else {
+      drawDeleteIcon(background);
+    }
+    container.position.set(x, y);
+  }
+
+  function drawSplitIcon(graphics) {
+    const cx = PREVIEW_ACTION_BUTTON_WIDTH / 2;
+    const cy = PREVIEW_CONTROL_HEIGHT / 2;
+
+    graphics
+      .moveTo(cx, cy - 11)
+      .lineTo(cx, cy + 11)
+      .stroke({ color: 0xffffff, width: 2 });
+    graphics
+      .moveTo(cx - 12, cy - 8)
+      .lineTo(cx - 3, cy)
+      .lineTo(cx - 12, cy + 8)
+      .stroke({ color: 0xffffff, alpha: 0.82, width: 2 });
+    graphics
+      .moveTo(cx + 12, cy - 8)
+      .lineTo(cx + 3, cy)
+      .lineTo(cx + 12, cy + 8)
+      .stroke({ color: 0xffffff, alpha: 0.82, width: 2 });
+  }
+
+  function drawDeleteIcon(graphics) {
+    const cx = PREVIEW_ACTION_BUTTON_WIDTH / 2;
+    const cy = PREVIEW_CONTROL_HEIGHT / 2;
+
+    graphics
+      .moveTo(cx - 9, cy - 7)
+      .lineTo(cx + 9, cy - 7)
+      .stroke({ color: 0xffffff, width: 2 });
+    graphics
+      .moveTo(cx - 5, cy - 11)
+      .lineTo(cx + 5, cy - 11)
+      .stroke({ color: 0xffffff, width: 2 });
+    graphics.rect(cx - 7, cy - 5, 14, 16).stroke({ color: 0xffffff, width: 2 });
+    graphics
+      .moveTo(cx - 3, cy - 2)
+      .lineTo(cx - 3, cy + 8)
+      .stroke({ color: 0xffffff, alpha: 0.75, width: 1 });
+    graphics
+      .moveTo(cx + 3, cy - 2)
+      .lineTo(cx + 3, cy + 8)
+      .stroke({ color: 0xffffff, alpha: 0.75, width: 1 });
   }
 
   function hideTimeline() {
@@ -797,17 +1551,93 @@ export async function startPixiMedia() {
     timelineKnob.clear();
   }
 
+  function drawDisabledTimeline() {
+    const timelineX = getPreviewTimelineX();
+    const timelineY = getPreviewTimelineY();
+    const timelineWidth = getPreviewTimelineWidth();
+    const barY = timelineY - TIMELINE_HEIGHT / 2;
+
+    timeline.visible = true;
+    timeline.hitArea = new Rectangle(
+      0,
+      timelineY - TIMELINE_HIT_HEIGHT / 2,
+      getPreviewWidth(),
+      TIMELINE_HIT_HEIGHT
+    );
+    drawPreviewPlaybackControls();
+
+    timelineTrack.clear();
+    timelineTrack
+      .roundRect(timelineX, barY, timelineWidth, TIMELINE_HEIGHT, TIMELINE_HEIGHT / 2)
+      .fill({ color: 0x111111, alpha: 0.7 })
+      .stroke({ color: 0xffffff, alpha: 0.3, width: 1 });
+
+    timelineFill.clear();
+    timelineKnob.clear();
+    timelineKnob
+      .moveTo(timelineX, timelineY - 14)
+      .lineTo(timelineX, timelineY + 14)
+      .stroke({ color: 0xffffff, alpha: 0.45, width: 3 });
+
+    currentTimeText.text = `${formatTime(0)} / ${formatTime(0)}`;
+    currentTimeText.position.set(getPreviewTimecodeX(), timelineY);
+  }
+
   function clearVideoTrackFrames() {
     editorTimelineFrames.removeChildren().forEach((child) => child.destroy());
     videoTrackTextures.forEach((texture) => texture.destroy(true));
     videoTrackTextures = [];
+  }
+
+  function clearAudioTrackClips() {
+    editorTimelineAudioClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    audioTrackGraphics = [];
+  }
+
+  function clearImageTrackClips({ destroyTextures = false } = {}) {
+    editorTimelineImageClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    if (destroyTextures) {
+      imageTrackTextures.forEach((texture) => texture.destroy(true));
+    }
+    imageTrackTextures = [];
+  }
+
+  function clearTimelineTracks() {
+    pauseTimelineAudio();
+    clearVideoTrackFrames();
+    clearAudioTrackClips();
+    clearImageTrackClips({ destroyTextures: true });
     clearEditorTimelineRuler();
+    videoTimelineClips.forEach((clip) => {
+      if (clip.provider && clip.provider !== videoFrameProvider) {
+        clip.provider.dispose();
+      }
+
+      if (clip.audioElement && clip.audioElement !== mediaElement) {
+        clip.audioElement.pause();
+        clip.audioElement.removeAttribute("src");
+        clip.audioElement.load();
+      }
+    });
+    audioTimelineClips.forEach((clip) => {
+      if (clip.audioElement) {
+        clip.audioElement.pause();
+        clip.audioElement.removeAttribute("src");
+        clip.audioElement.load();
+      }
+    });
+    videoTimelineClips = [];
+    audioTimelineClips = [];
+    imageTimelineClips = [];
+    timelineObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+    timelineObjectUrls = [];
   }
 
   function clearEditorTimelineRuler() {
     editorTimelineRuler.clear();
     editorTimelineRulerLabels.removeChildren().forEach((child) => child.destroy());
     editorTimelineRulerDuration = -1;
+    editorTimelineRulerY = -1;
   }
 
   function hideEditorTimeline() {
@@ -815,8 +1645,10 @@ export async function startPixiMedia() {
     editorTimelineBackground.clear();
     editorTimelinePlayhead.clear();
     editorTimelineMask.clear();
+    editorTimelineTrackLabels.removeChildren().forEach((child) => child.destroy());
     editorTimelineStatus.text = "";
     editorTimelineContent.x = 0;
+    timelineApp.render();
   }
 
   function drawEditorTimeline() {
@@ -825,45 +1657,106 @@ export async function startPixiMedia() {
       return;
     }
 
-    const duration = mediaElement.duration;
-    const currentTime = Math.min(Math.max(mediaElement.currentTime, 0), duration);
+    const panelY = getEditorPanelY();
+    const panelHeight = getEditorPanelHeight();
+    const panelWidth = getEditorPanelWidth();
+    const rulerY = getEditorRulerY();
+    const trackX = getVideoTrackX();
+    const trackWidth = getVideoTrackWidth();
+    const playheadX = getEditorPlayheadX();
+    const duration = getTimelineDuration();
+    const currentTime = Math.min(Math.max(playbackTime, 0), duration);
     buildEditorTimelineRuler(duration);
-    editorTimelineContent.x = EDITOR_PLAYHEAD_X - currentTime * TIMELINE_PIXELS_PER_SECOND;
+    editorTimelineContent.x = playheadX - currentTime * TIMELINE_PIXELS_PER_SECOND;
+    editorTimeline.hitArea = new Rectangle(EDITOR_PANEL_X, panelY, panelWidth, panelHeight);
 
     editorTimeline.visible = true;
     editorTimelineBackground.clear();
     editorTimelineBackground
-      .roundRect(EDITOR_PANEL_X, EDITOR_PANEL_Y, EDITOR_PANEL_WIDTH, EDITOR_PANEL_HEIGHT, 8)
+      .roundRect(EDITOR_PANEL_X, panelY, panelWidth, panelHeight, 0)
       .fill({ color: 0x0f172a, alpha: 0.94 })
       .stroke({ color: 0x334155, width: 1 });
+    drawTrackBackground(getVideoTrackY(), VIDEO_TRACK_HEIGHT);
+
+    for (let index = 0; index < getAudioTrackCount(); index += 1) {
+      drawTrackBackground(getAudioTrackY(index), AUDIO_TRACK_HEIGHT);
+    }
+
+    for (let index = 0; index < getImageTrackCount(); index += 1) {
+      drawTrackBackground(getImageTrackY(index), IMAGE_TRACK_HEIGHT);
+    }
+
     editorTimelineBackground
-      .roundRect(VIDEO_TRACK_X, VIDEO_TRACK_Y, VIDEO_TRACK_WIDTH, VIDEO_TRACK_HEIGHT, 6)
-      .fill({ color: 0x111827, alpha: 0.98 })
-      .stroke({ color: 0x475569, width: 1 });
-    editorTimelineBackground
-      .rect(VIDEO_TRACK_X, EDITOR_RULER_Y, VIDEO_TRACK_WIDTH, 1)
+      .rect(trackX, rulerY, trackWidth, 1)
       .fill({ color: 0x475569, alpha: 0.75 });
 
     editorTimelineMask.clear();
-    editorTimelineMask
-      .rect(VIDEO_TRACK_X, EDITOR_PANEL_Y + 8, VIDEO_TRACK_WIDTH, EDITOR_PANEL_HEIGHT - 16)
-      .fill(0xffffff);
+    editorTimelineMask.rect(trackX, panelY, trackWidth, panelHeight).fill(0xffffff);
 
     editorTimelinePlayhead.clear();
     editorTimelinePlayhead
-      .moveTo(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 10)
-      .lineTo(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + EDITOR_PANEL_HEIGHT - 10)
+      .moveTo(playheadX, panelY + 10)
+      .lineTo(playheadX, panelY + panelHeight - 10)
       .stroke({ color: 0x38bdf8, width: 2 });
-    editorTimelinePlayhead.circle(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 10, 4).fill(0x38bdf8);
-    editorTimelineStatus.position.set(EDITOR_PLAYHEAD_X, EDITOR_PANEL_Y + 14);
+    editorTimelinePlayhead.circle(playheadX, panelY + 10, 4).fill(0x38bdf8);
+    editorTimelineStatus.position.set(playheadX, panelY + 14);
+    drawEditorTrackLabels();
+    layoutVideoTrackFrames();
 
     if (!videoTrackLoading && videoTrackTextures.length > 0) {
       editorTimelineStatus.text = "";
     }
+
+    timelineApp.render();
   }
 
   function getEditorTimelineContentWidth(duration) {
     return Math.max(1, duration * TIMELINE_PIXELS_PER_SECOND);
+  }
+
+  function drawTrackBackground(y, height) {
+    editorTimelineBackground
+      .roundRect(getVideoTrackX(), y, getVideoTrackWidth(), height, 6)
+      .fill({ color: 0x111827, alpha: 0.98 })
+      .stroke({ color: 0x475569, width: 1 });
+  }
+
+  function layoutVideoTrackFrames() {
+    const y = getVideoTrackY() + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
+
+    for (const child of editorTimelineFrames.children) {
+      child.y = y;
+      child.height = VIDEO_THUMB_HEIGHT;
+    }
+  }
+
+  function drawEditorTrackLabels() {
+    editorTimelineTrackLabels.removeChildren().forEach((child) => child.destroy());
+    addEditorTrackLabel("Video", getVideoTrackY() + VIDEO_TRACK_HEIGHT / 2);
+
+    for (let index = 0; index < getAudioTrackCount(); index += 1) {
+      addEditorTrackLabel(`Audio ${index + 1}`, getAudioTrackY(index) + AUDIO_TRACK_HEIGHT / 2);
+    }
+
+    for (let index = 0; index < getImageTrackCount(); index += 1) {
+      addEditorTrackLabel(`Image ${index + 1}`, getImageTrackY(index) + IMAGE_TRACK_HEIGHT / 2);
+    }
+  }
+
+  function addEditorTrackLabel(text, y) {
+    const label = new Text({
+      text,
+      style: {
+        fill: "#cbd5e1",
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: 12,
+        fontWeight: "700",
+      },
+    });
+
+    label.anchor.set(0, 0.5);
+    label.position.set(EDITOR_PANEL_X + 14, y);
+    editorTimelineTrackLabels.addChild(label);
   }
 
   function getEditorTimelineRulerDurationSeconds(duration) {
@@ -871,7 +1764,12 @@ export async function startPixiMedia() {
   }
 
   function buildEditorTimelineRuler(duration) {
-    if (Math.abs(editorTimelineRulerDuration - duration) < 0.001) {
+    const rulerY = getEditorRulerY();
+
+    if (
+      Math.abs(editorTimelineRulerDuration - duration) < 0.001 &&
+      Math.abs(editorTimelineRulerY - rulerY) < 0.001
+    ) {
       return;
     }
 
@@ -879,12 +1777,13 @@ export async function startPixiMedia() {
     const contentWidth = lastSecond * TIMELINE_PIXELS_PER_SECOND;
 
     editorTimelineRulerDuration = duration;
+    editorTimelineRulerY = rulerY;
     editorTimelineRuler.clear();
     editorTimelineRulerLabels.removeChildren().forEach((child) => child.destroy());
 
     editorTimelineRuler
-      .moveTo(0, EDITOR_RULER_Y)
-      .lineTo(contentWidth, EDITOR_RULER_Y)
+      .moveTo(0, rulerY)
+      .lineTo(contentWidth, rulerY)
       .stroke({ color: 0x64748b, width: 1 });
 
     for (let second = 0; second <= lastSecond; second += 1) {
@@ -892,8 +1791,8 @@ export async function startPixiMedia() {
       const tickHeight = second % 10 === 0 ? 13 : second % 5 === 0 ? 10 : 6;
 
       editorTimelineRuler
-        .moveTo(x, EDITOR_RULER_Y)
-        .lineTo(x, EDITOR_RULER_Y - tickHeight)
+        .moveTo(x, rulerY)
+        .lineTo(x, rulerY - tickHeight)
         .stroke({ color: second % 5 === 0 ? 0x94a3b8 : 0x64748b, width: 1 });
 
       if (second % 10 === 0) {
@@ -908,54 +1807,66 @@ export async function startPixiMedia() {
         });
 
         label.anchor.set(0.5, 0);
-        label.position.set(x, EDITOR_RULER_Y + 4);
+        label.position.set(x, rulerY + 4);
         editorTimelineRulerLabels.addChild(label);
       }
     }
   }
 
-  function startVideoTrackBuild(file) {
+  function startVideoTrackBuild() {
     const buildId = videoTrackBuildId + 1;
-    const contentWidth = getEditorTimelineContentWidth(videoFrameProvider.duration);
+    const timelineDuration = getTimelineDuration();
+    const contentWidth = getEditorTimelineContentWidth(timelineDuration);
     const maxFrames = Math.max(1, Math.min(420, Math.ceil(contentWidth / VIDEO_THUMB_WIDTH)));
-    const intervalSeconds = Math.max(0.1, videoFrameProvider.duration / maxFrames);
 
     videoTrackBuildId = buildId;
     videoTrackLoading = true;
     clearVideoTrackFrames();
+    clearEditorTimelineRuler();
     editorTimelineStatus.text = "Loading frames";
     drawEditorTimeline();
 
-    extractVideoFramesWithMediabunny(file, {
-      fit: "cover",
-      includeLastFrame: true,
-      intervalSeconds,
-      maxFrames,
-      poolSize: 3,
-      thumbnailHeight: VIDEO_THUMB_HEIGHT,
-      thumbnailWidth: VIDEO_THUMB_WIDTH,
-    })
-      .then((frames) => {
+    (async () => {
+      for (const clip of videoTimelineClips) {
+        const clipWidth = getEditorTimelineContentWidth(clip.duration);
+        const clipMaxFrames = Math.max(
+          1,
+          Math.min(maxFrames, Math.ceil(clipWidth / VIDEO_THUMB_WIDTH))
+        );
+        const intervalSeconds = Math.max(0.1, clip.duration / clipMaxFrames);
+        const frames = await extractVideoFramesWithMediabunny(clip.file, {
+          fit: "cover",
+          includeLastFrame: true,
+          intervalSeconds,
+          maxFrames: clipMaxFrames,
+          poolSize: 3,
+          thumbnailHeight: VIDEO_THUMB_HEIGHT,
+          thumbnailWidth: VIDEO_THUMB_WIDTH,
+        });
+
         if (buildId !== videoTrackBuildId || currentKind !== "video") {
           return;
         }
 
-        clearVideoTrackFrames();
-        buildEditorTimelineRuler(videoFrameProvider.duration);
         frames.forEach((frame, index) => {
           const texture = Texture.from(frame.canvas, true);
           const sprite = new Sprite({ texture });
-          const frameWidth = contentWidth / frames.length;
+          const frameWidth = clipWidth / frames.length;
 
-          sprite.x = index * frameWidth;
-          sprite.y = VIDEO_TRACK_Y + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
+          sprite.x = clip.startTime * TIMELINE_PIXELS_PER_SECOND + index * frameWidth;
+          sprite.y = getVideoTrackY() + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
           sprite.width = Math.ceil(frameWidth) + 1;
           sprite.height = VIDEO_THUMB_HEIGHT;
           videoTrackTextures.push(texture);
           editorTimelineFrames.addChild(sprite);
         });
-        editorTimelineStatus.text = frames.length ? "" : "No frames";
-      })
+      }
+
+      if (buildId === videoTrackBuildId) {
+        buildEditorTimelineRuler(getTimelineDuration());
+        editorTimelineStatus.text = videoTrackTextures.length ? "" : "No frames";
+      }
+    })()
       .catch((error) => {
         if (buildId === videoTrackBuildId) {
           editorTimelineStatus.text =
@@ -971,7 +1882,146 @@ export async function startPixiMedia() {
       });
   }
 
-  function renderScene() {
+  function renderAudioTimelineClip(clip, samples = null) {
+    const container = new Container();
+    const graphic = new Graphics();
+    const x = clip.startTime * TIMELINE_PIXELS_PER_SECOND;
+    const y = getAudioTrackY(getClipTrackIndex(clip)) + 2;
+    const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+    const height = AUDIO_TRACK_HEIGHT - 4;
+
+    container.position.set(x, y);
+    container.eventMode = "static";
+    container.cursor = playbackPlaying ? "default" : "grab";
+    container.hitArea = new Rectangle(0, 0, width, height);
+    container.on("pointerdown", (event) => handleTimelineClipPointerDown("audio", clip, event));
+
+    graphic
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x1e3a8a, alpha: 0.88 })
+      .stroke({ color: 0x38bdf8, width: 1 });
+
+    const barCount = Math.max(8, Math.floor(width / 3));
+    const barWidth = Math.max(1, width / barCount - 1);
+
+    for (let index = 0; index < barCount; index += 1) {
+      const value = samples
+        ? samples[Math.floor((index / barCount) * samples.length)]
+        : 0.35 + 0.25 * Math.sin(index * 1.7);
+      const barHeight = Math.max(2, Math.abs(value) * (height - 6));
+      const barX = index * (width / barCount);
+      const barY = height / 2 - barHeight / 2;
+
+      graphic.roundRect(barX, barY, barWidth, barHeight, 2).fill({
+        color: 0x93c5fd,
+        alpha: 0.88,
+      });
+    }
+
+    container.addChild(graphic);
+    editorTimelineAudioClips.addChild(container);
+    audioTrackGraphics.push(container);
+  }
+
+  async function drawAudioSpectrum(clip) {
+    const context = audioContext || new AudioContext();
+    const buffer = await clip.file.arrayBuffer();
+    const decoded = await context.decodeAudioData(buffer.slice(0));
+    const channel = decoded.getChannelData(0);
+    const sampleCount = Math.max(16, Math.floor(clip.duration * TIMELINE_PIXELS_PER_SECOND));
+    const samples = [];
+
+    for (let index = 0; index < sampleCount; index += 1) {
+      const start = Math.floor((index / sampleCount) * channel.length);
+      const end = Math.floor(((index + 1) / sampleCount) * channel.length);
+      let peak = 0;
+
+      for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+        peak = Math.max(peak, Math.abs(channel[sampleIndex] || 0));
+      }
+
+      samples.push(peak);
+    }
+
+    clip.samples = samples;
+    clearAudioTrackClips();
+    audioTimelineClips.forEach((audioClip) => {
+      renderAudioTimelineClip(audioClip, audioClip.samples || null);
+    });
+    drawEditorTimeline();
+    app.render();
+  }
+
+  function renderImageTimelineClip(clip) {
+    const container = new Container();
+    const background = new Graphics();
+    const sprite = new Sprite({ texture: clip.texture });
+    const x = clip.startTime * TIMELINE_PIXELS_PER_SECOND;
+    const y = getImageTrackY(getClipTrackIndex(clip)) + 2;
+    const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+    const height = IMAGE_TRACK_HEIGHT - 4;
+
+    container.position.set(x, y);
+    container.eventMode = "static";
+    container.cursor = playbackPlaying ? "default" : "grab";
+    container.hitArea = new Rectangle(0, 0, width, height);
+    container.on("pointerdown", (event) => handleTimelineClipPointerDown("image", clip, event));
+
+    background
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x3f2d0b, alpha: 0.9 })
+      .stroke({ color: 0xfbbf24, width: 1 });
+
+    sprite.x = 3;
+    sprite.y = 3;
+    sprite.width = Math.min(width - 6, height - 6);
+    sprite.height = height - 6;
+    if (!imageTrackTextures.includes(clip.texture)) {
+      imageTrackTextures.push(clip.texture);
+    }
+    container.addChild(background, sprite);
+    editorTimelineImageClips.addChild(container);
+  }
+
+  function renderTimelineClipTracks() {
+    clearAudioTrackClips();
+    clearImageTrackClips();
+    audioTimelineClips.forEach((clip) => renderAudioTimelineClip(clip, clip.samples || null));
+    imageTimelineClips.forEach((clip) => renderImageTimelineClip(clip));
+  }
+
+  function getVideoTimelineDuration() {
+    return videoTimelineClips.reduce(
+      (maxTime, clip) => Math.max(maxTime, clip.startTime + clip.duration),
+      0
+    );
+  }
+
+  function getTimelineDuration() {
+    const clipEnds = [...videoTimelineClips, ...audioTimelineClips, ...imageTimelineClips].map(
+      (clip) => clip.startTime + clip.duration
+    );
+    const mediaDuration =
+      currentKind === "audio" && mediaElement && Number.isFinite(mediaElement.duration)
+        ? mediaElement.duration
+        : 0;
+
+    return Math.max(mediaDuration, 1, ...clipEnds);
+  }
+
+  function getInsertionTime() {
+    if (currentKind === "video") {
+      return Math.min(Math.max(playbackTime, 0), getTimelineDuration());
+    }
+
+    if (mediaElement && Number.isFinite(mediaElement.currentTime)) {
+      return Math.min(Math.max(mediaElement.currentTime, 0), getTimelineDuration());
+    }
+
+    return 0;
+  }
+
+  function renderScene(ticker) {
     if (currentKind === "audio") {
       drawAudioVisualizer();
       drawTimeline();
@@ -980,11 +2030,28 @@ export async function startPixiMedia() {
       overlayImageGroup.visible = false;
     } else if (currentKind === "empty") {
       drawEmptyBackground();
-      hideTimeline();
+      drawDisabledTimeline();
       hideEditorTimeline();
       overlayText.visible = false;
       overlayImageGroup.visible = false;
     } else {
+      if (playbackPlaying) {
+        const deltaSeconds = Math.min(0.1, Math.max(0, (ticker?.deltaMS || 16.67) / 1000));
+        const duration = getPlaybackDuration();
+
+        playbackTime = Math.min(playbackTime + deltaSeconds, duration);
+
+        if (playbackTime >= duration - 0.001) {
+          playbackTime = duration;
+          playbackPlaying = false;
+          pauseTimelineAudio();
+          statusText.textContent = "Ended";
+          app.stop();
+        } else {
+          syncTimelineAudio();
+        }
+      }
+
       updateVideoTexture();
       overlay.clear();
       visualizer.clear();
@@ -1000,21 +2067,29 @@ export async function startPixiMedia() {
     maintainCanvasLayout();
     const bounds = canvas.getBoundingClientRect();
     app.renderer.resize(Math.max(1, bounds.width), Math.max(1, bounds.height));
-    const scale = Math.min(app.screen.width / VIEW_WIDTH, app.screen.height / VIEW_HEIGHT);
+    scene.scale.set(1);
+    scene.position.set(0, 0);
+    layoutPreviewText();
 
-    scene.scale.set(scale);
-    scene.position.set(
-      (app.screen.width - VIEW_WIDTH * scale) / 2,
-      (app.screen.height - VIEW_HEIGHT * scale) / 2
+    const timelineBounds = timelineCanvas.getBoundingClientRect();
+    timelineApp.renderer.resize(
+      Math.max(1, timelineBounds.width),
+      Math.max(1, timelineBounds.height)
     );
+    timelineScale = Math.min(1, timelineApp.screen.width / VIEW_WIDTH);
+    timelineScene.scale.set(timelineScale);
+    timelineScene.position.set(0, -PREVIEW_HEIGHT * timelineScale);
     renderScene();
     app.render();
+    timelineApp.render();
     maintainCanvasLayout();
   }
 
   function maintainCanvasLayout() {
     canvas.style.width = "100%";
-    canvas.style.height = "auto";
+    canvas.style.height = "100%";
+    timelineCanvas.style.width = "100%";
+    timelineCanvas.style.height = "100%";
   }
 
   function getFileExtension(file) {
@@ -1099,16 +2174,147 @@ export async function startPixiMedia() {
     return `${minutes}:${secondText}`;
   }
 
+  function handleTimelineClipPointerDown(type, clip, event) {
+    suppressNextCanvasToggle = true;
+
+    if (playbackPlaying) {
+      statusText.textContent = "Pause before dragging clips";
+      event.stopPropagation();
+      return;
+    }
+
+    const local = editorTimelineContent.toLocal(event.global);
+
+    timelineClipDrag = {
+      clip,
+      pointerOffsetSeconds: local.x / TIMELINE_PIXELS_PER_SECOND - clip.startTime,
+      targetStartTime: clip.startTime,
+      targetTrackIndex: getClipTrackIndex(clip),
+      timelineDuration: getTimelineDuration(),
+      type,
+    };
+    statusText.textContent = "Dragging clip";
+    event.stopPropagation();
+  }
+
+  function handleTimelineClipPointerMove(event) {
+    if (!timelineClipDrag) {
+      return;
+    }
+
+    updateTimelineClipDrag(event);
+  }
+
+  function handleTimelineClipPointerUp(event) {
+    if (!timelineClipDrag) {
+      return;
+    }
+
+    updateTimelineClipDrag(event);
+
+    const { clip, targetStartTime, targetTrackIndex, type } = timelineClipDrag;
+    const clips = getTimelineClipsByType(type);
+    const finalTrackIndex = hasTimelineClipOverlap(type, clip, targetTrackIndex, targetStartTime)
+      ? getNextTrackIndex(clips, clip)
+      : targetTrackIndex;
+
+    clip.startTime = targetStartTime;
+    clip.trackIndex = finalTrackIndex;
+    timelineClipDrag = null;
+    renderTimelineClipTracks();
+    clearEditorTimelineRuler();
+    drawTimeline();
+    drawEditorTimeline();
+    updateImageOverlayPosition();
+    statusText.textContent = "Paused";
+    app.render();
+    event.stopPropagation();
+  }
+
+  function updateTimelineClipDrag(event) {
+    if (!timelineClipDrag) {
+      return;
+    }
+
+    const target = getTimelineClipDragTarget(event);
+    const { clip, type } = timelineClipDrag;
+
+    clip.startTime = target.startTime;
+    clip.trackIndex = target.trackIndex;
+    timelineClipDrag.targetStartTime = target.startTime;
+    timelineClipDrag.targetTrackIndex = target.trackIndex;
+    renderTimelineClipTracks();
+    clearEditorTimelineRuler();
+    drawTimeline();
+    drawEditorTimeline();
+    statusText.textContent = hasTimelineClipOverlap(type, clip, target.trackIndex, target.startTime)
+      ? "Release to move into a new track"
+      : "Dragging clip";
+    app.render();
+  }
+
+  function getTimelineClipDragTarget(event) {
+    const { clip, pointerOffsetSeconds, timelineDuration, type } = timelineClipDrag;
+    const local = editorTimelineContent.toLocal(event.global);
+    const maxStartTime = Math.max(0, timelineDuration - clip.duration);
+    const startTime = Math.min(
+      Math.max(local.x / TIMELINE_PIXELS_PER_SECOND - pointerOffsetSeconds, 0),
+      maxStartTime
+    );
+
+    return {
+      startTime,
+      trackIndex: getTimelineTrackIndexFromY(type, local.y),
+    };
+  }
+
+  function getTimelineTrackIndexFromY(type, y) {
+    const count = type === "audio" ? getAudioTrackCount() : getImageTrackCount();
+    const firstY = type === "audio" ? getAudioTrackY(0) : getImageTrackY(0);
+    const rawIndex = Math.round((y - firstY) / getTrackPitch());
+
+    return Math.min(Math.max(rawIndex, 0), Math.max(0, count - 1));
+  }
+
+  function getTimelineClipsByType(type) {
+    return type === "audio" ? audioTimelineClips : imageTimelineClips;
+  }
+
+  function hasTimelineClipOverlap(type, movingClip, trackIndex, startTime) {
+    const endTime = startTime + movingClip.duration;
+
+    return getTimelineClipsByType(type).some((clip) => {
+      if (clip === movingClip || getClipTrackIndex(clip) !== trackIndex) {
+        return false;
+      }
+
+      const clipStart = clip.startTime;
+      const clipEnd = clip.startTime + clip.duration;
+
+      return (
+        startTime < clipEnd - TRACK_OVERLAP_EPSILON && endTime > clipStart + TRACK_OVERLAP_EPSILON
+      );
+    });
+  }
+
   function seekFromPointer(event) {
     if (!isSeekableMedia()) {
       return;
     }
 
     const local = timeline.toLocal(event.global);
-    const progress = Math.min(Math.max((local.x - TIMELINE_X) / TIMELINE_WIDTH, 0), 1);
+    const progress = Math.min(
+      Math.max((local.x - getPreviewTimelineX()) / getPreviewTimelineWidth(), 0),
+      1
+    );
+    const duration = getPlaybackDuration();
 
-    mediaElement.currentTime = progress * mediaElement.duration;
-    updateVideoTexture(true);
+    if (currentKind === "video") {
+      setTimelinePlaybackTime(progress * duration, true);
+    } else if (mediaElement) {
+      mediaElement.currentTime = progress * duration;
+    }
+
     drawTimeline();
     app.render();
   }
@@ -1118,10 +2324,27 @@ export async function startPixiMedia() {
       return;
     }
 
+    const local = timeline.toLocal(event.global);
+    const timelineX = getPreviewTimelineX();
+    const timelineWidth = getPreviewTimelineWidth();
+
+    if (local.x < timelineX || local.x > timelineX + timelineWidth) {
+      return;
+    }
+
     suppressNextCanvasToggle = true;
     isSeeking = true;
-    wasPlayingBeforeSeek = !mediaElement.paused;
-    mediaElement.pause();
+    wasPlayingBeforeSeek =
+      currentKind === "video" ? playbackPlaying : Boolean(mediaElement && !mediaElement.paused);
+
+    if (currentKind === "video") {
+      playbackPlaying = false;
+      pauseTimelineAudio();
+      app.stop();
+    } else {
+      mediaElement.pause();
+    }
+
     seekFromPointer(event);
   }
 
@@ -1133,13 +2356,20 @@ export async function startPixiMedia() {
     seekFromPointer(event);
     isSeeking = false;
 
-    if (wasPlayingBeforeSeek) {
+    if (currentKind === "video" && wasPlayingBeforeSeek) {
+      await startTimelinePlayback();
+    } else if (currentKind !== "video" && wasPlayingBeforeSeek) {
       await mediaElement.play();
       statusText.textContent = "Click canvas to pause";
       app.start();
     } else {
       statusText.textContent = "Paused";
-      handleMediaSeeked();
+      if (currentKind === "video") {
+        renderScene();
+        app.render();
+      } else {
+        handleMediaSeeked();
+      }
     }
   }
 
@@ -1149,13 +2379,55 @@ export async function startPixiMedia() {
     }
   }
 
+  function handlePlayPauseButtonPointerDown(event) {
+    suppressNextCanvasToggle = true;
+    event.stopPropagation();
+    void toggleMediaPlayback();
+  }
+
+  function handlePlayPauseButtonPointerOver() {
+    canvas.title = currentKind === "video" && playbackPlaying ? "暂停" : "播放";
+  }
+
+  function handleSplitButtonPointerDown(event) {
+    suppressNextCanvasToggle = true;
+    event.stopPropagation();
+    statusText.textContent = "Split";
+  }
+
+  function handleSplitButtonPointerOver() {
+    canvas.title = "分割";
+  }
+
+  function handleDeleteButtonPointerDown(event) {
+    suppressNextCanvasToggle = true;
+    event.stopPropagation();
+    statusText.textContent = "Delete";
+  }
+
+  function handleDeleteButtonPointerOver() {
+    canvas.title = "删除";
+  }
+
+  function handlePreviewButtonPointerOut() {
+    canvas.removeAttribute("title");
+  }
+
   function handleMediaSeeked() {
-    updateVideoTexture(true);
+    if (currentKind === "video") {
+      updateVideoTexture(true);
+    }
+
     renderScene();
     app.render();
   }
 
   function handleMediaEnded() {
+    if (currentKind === "video") {
+      pauseTimelinePlayback("Ended");
+      return;
+    }
+
     statusText.textContent = "Ended";
     updateVideoTexture(true);
     renderScene();
@@ -1166,16 +2438,17 @@ export async function startPixiMedia() {
   function getTextOverlayExportState() {
     const rect = getMediaSpriteRect();
 
-    if (!rect) {
+    if (!rect || textOverlayIntervals.length === 0) {
       return null;
     }
 
     return {
-      fillStyle: "#ffffff",
-      fontFamily: "Inter, system-ui, sans-serif",
+      fillStyle: subtitleColorInput.value,
+      fontFamily: `${subtitleFontSelect.value}, system-ui, sans-serif`,
+      fontStyle: subtitleStyleSelect.value.includes("Italic") ? "italic" : "normal",
       fontSizeRatio: Number(overlayText.style.fontSize || 42) / rect.height,
-      fontWeight: "800",
-      intervals: TEXT_OVERLAY_INTERVALS,
+      fontWeight: subtitleStyleSelect.value.includes("Bold") ? "800" : "400",
+      intervals: textOverlayIntervals,
       transitionSeconds: OVERLAY_FADE_SECONDS,
       strokeStyle: "rgba(0, 0, 0, 0.82)",
       text: overlayText.text,
@@ -1184,22 +2457,58 @@ export async function startPixiMedia() {
     };
   }
 
-  function getImageOverlayExportState() {
+  function getImageOverlayExportStates() {
     const rect = getMediaSpriteRect();
 
-    if (!rect || !imagePositionInitialized) {
+    if (!rect) {
+      return [];
+    }
+
+    return imageTimelineClips.map((clip) => {
+      const frame = getImageExportFrame(rect, clip);
+
+      return {
+        duration: clip.duration,
+        imageSource: clip.imageElement,
+        startTime: clip.startTime,
+        transitionSeconds: OVERLAY_FADE_SECONDS,
+        heightRatio: frame.height / rect.height,
+        widthRatio: frame.width / rect.width,
+        xRatio: (frame.x - rect.left) / rect.width,
+        yRatio: (frame.y - rect.top) / rect.height,
+      };
+    });
+  }
+
+  function getImageExportFrame(rect, clip) {
+    if (imagePositionInitialized) {
+      return imageFrame;
+    }
+
+    const width = clip.texture.width || clip.imageElement.naturalWidth || 1;
+    const height = clip.texture.height || clip.imageElement.naturalHeight || 1;
+    const aspectRatio = width / height;
+    const frameWidth = Math.min(rect.width * 0.5, rect.height * aspectRatio);
+    const frameHeight = frameWidth / aspectRatio;
+
+    return {
+      height: frameHeight,
+      width: frameWidth,
+      x: rect.left + (rect.width - frameWidth) / 2,
+      y: rect.top + (rect.height - frameHeight) / 2,
+    };
+  }
+
+  function getActiveImageTimelineClip() {
+    if (currentKind !== "video") {
       return null;
     }
 
-    return {
-      imageSource: overlayImageElement,
-      ...IMAGE_OVERLAY_INTERVAL,
-      transitionSeconds: OVERLAY_FADE_SECONDS,
-      heightRatio: imageFrame.height / rect.height,
-      widthRatio: imageFrame.width / rect.width,
-      xRatio: (imageFrame.x - rect.left) / rect.width,
-      yRatio: (imageFrame.y - rect.top) / rect.height,
-    };
+    return (
+      imageTimelineClips.find(
+        (clip) => playbackTime >= clip.startTime && playbackTime < clip.startTime + clip.duration
+      ) || null
+    );
   }
 
   function downloadBlob(blob, fileNameValue) {
@@ -1214,15 +2523,69 @@ export async function startPixiMedia() {
     window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
   }
 
+  async function createTimelineAudioMixdown(duration) {
+    const audioSources = [
+      ...videoTimelineClips.map((clip) => ({
+        duration: clip.duration,
+        file: clip.file,
+        startTime: clip.startTime,
+        volume: clip.volume ?? 1,
+      })),
+      ...audioTimelineClips.map((clip) => ({
+        duration: clip.duration,
+        file: clip.file,
+        startTime: clip.startTime,
+        volume: clip.volume ?? 1,
+      })),
+    ];
+
+    if (audioSources.length === 0 || duration <= 0) {
+      return null;
+    }
+
+    const sampleRate = 48000;
+    const offlineContext = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
+    const decodeContext = audioContext || new AudioContext();
+    let decodedCount = 0;
+
+    for (const source of audioSources) {
+      try {
+        const arrayBuffer = await source.file.arrayBuffer();
+        const buffer = await decodeContext.decodeAudioData(arrayBuffer.slice(0));
+        const node = offlineContext.createBufferSource();
+        const gain = offlineContext.createGain();
+
+        node.buffer = buffer;
+        gain.gain.value = source.volume;
+        node.connect(gain);
+        gain.connect(offlineContext.destination);
+        node.start(
+          Math.max(0, source.startTime),
+          0,
+          Math.min(buffer.duration, source.duration, Math.max(0, duration - source.startTime))
+        );
+        decodedCount += 1;
+      } catch {
+        // Some containers/codecs cannot be decoded by AudioContext; skip those tracks for export.
+      }
+    }
+
+    if (decodedCount === 0) {
+      return null;
+    }
+
+    return offlineContext.startRendering();
+  }
+
   async function handleExportClick() {
     if (!currentVideoFile || isExporting) {
       return;
     }
 
     const textOverlayState = getTextOverlayExportState();
-    const imageOverlayState = getImageOverlayExportState();
+    const imageOverlayStates = getImageOverlayExportStates();
 
-    if (!textOverlayState && !imageOverlayState) {
+    if (!textOverlayState && imageOverlayStates.length === 0 && audioTimelineClips.length === 0) {
       statusText.textContent = "No overlay";
       return;
     }
@@ -1232,19 +2595,33 @@ export async function startPixiMedia() {
     chooseButton.disabled = true;
     statusText.textContent = "Exporting 0%";
 
-    const shouldResume = currentKind === "video" && mediaElement && !mediaElement.paused;
+    const shouldResume = currentKind === "video" && playbackPlaying;
 
+    playbackPlaying = false;
+    pauseTimelineAudio();
     mediaElement?.pause();
     app.stop();
 
     try {
-      const blob = await exportVideoWithTextOverlay(
-        currentVideoFile,
+      const duration = getTimelineDuration();
+
+      statusText.textContent = "Mixing audio";
+      const audioBuffer = await createTimelineAudioMixdown(duration);
+
+      statusText.textContent = "Exporting 0%";
+      const blob = await exportTimelineComposition(
+        videoTimelineClips.map((clip) => ({
+          duration: clip.duration,
+          file: clip.file,
+          startTime: clip.startTime,
+        })),
         {
           ...textOverlayState,
-          image: imageOverlayState,
+          images: imageOverlayStates,
         },
         {
+          audioBuffer,
+          duration,
           onProgress(progress) {
             statusText.textContent = `Exporting ${Math.round(progress * 100)}%`;
           },
@@ -1261,10 +2638,8 @@ export async function startPixiMedia() {
       chooseButton.disabled = false;
       exportButton.disabled = currentKind !== "video" || !currentVideoFile;
 
-      if (shouldResume && mediaElement) {
-        await mediaElement.play();
-        statusText.textContent = "Click canvas to pause";
-        app.start();
+      if (shouldResume) {
+        await startTimelinePlayback();
       } else {
         app.render();
       }
@@ -1412,14 +2787,45 @@ export async function startPixiMedia() {
     input.value = "";
   }
 
-  function isPointerInEditorPanel(event) {
-    if (!event) {
-      return false;
-    }
+  function handleSubtitleClick() {
+    applySubtitleControls();
+    textOverlayIntervals = [
+      {
+        duration: TEXT_OVERLAY_DEFAULT_DURATION,
+        startTime: getCurrentPlaybackTime(),
+      },
+    ];
+    textPositionInitialized = false;
+    updateTextOverlayPosition();
+    app.render();
+  }
 
-    const canvasPoint = getCanvasPoint(event);
+  function handleSubtitleControlChange() {
+    applySubtitleControls();
+    updateTextOverlayPosition();
+    app.render();
+  }
 
-    return canvasPoint.y >= EDITOR_PANEL_Y - 8;
+  function applySubtitleControls() {
+    const fontSize = Number(subtitleSizeSelect.value) || 42;
+    const fontStyleValue = subtitleStyleSelect.value;
+    const isItalic = fontStyleValue.includes("Italic");
+    const isBold = fontStyleValue.includes("Bold");
+
+    overlayText.text = subtitleTextInput.value || TEXT_OVERLAY_VALUE;
+    overlayText.style.fontSize = fontSize;
+    overlayText.style.fontFamily = `${subtitleFontSelect.value}, system-ui, sans-serif`;
+    overlayText.style.fontStyle = isItalic ? "italic" : "normal";
+    overlayText.style.fontWeight = isBold ? "800" : "400";
+    overlayText.style.fill = subtitleColorInput.value;
+    overlayText.style.stroke = {
+      color: "rgba(0, 0, 0, 0.82)",
+      width: Math.max(4, Math.round(fontSize * 0.16)),
+    };
+  }
+
+  function isPointerInEditorPanel() {
+    return false;
   }
 
   function isPointerInImageOverlay(event) {
@@ -1442,8 +2848,8 @@ export async function startPixiMedia() {
     const bounds = canvas.getBoundingClientRect();
 
     return {
-      x: ((event.clientX - bounds.left) / bounds.width) * VIEW_WIDTH,
-      y: ((event.clientY - bounds.top) / bounds.height) * VIEW_HEIGHT,
+      x: ((event.clientX - bounds.left) / bounds.width) * getPreviewWidth(),
+      y: ((event.clientY - bounds.top) / bounds.height) * getPreviewHeight(),
     };
   }
 
@@ -1460,12 +2866,26 @@ export async function startPixiMedia() {
       return;
     }
 
-    if (!mediaElement || currentKind === "image") {
+    await toggleMediaPlayback();
+  }
+
+  async function toggleMediaPlayback() {
+    if ((!mediaElement && currentKind !== "video") || currentKind === "image") {
       return;
     }
 
     if (audioContext?.state === "suspended") {
       await audioContext.resume();
+    }
+
+    if (currentKind === "video") {
+      if (playbackPlaying) {
+        pauseTimelinePlayback();
+      } else {
+        await startTimelinePlayback();
+      }
+
+      return;
     }
 
     if (mediaElement.paused) {
@@ -1480,6 +2900,12 @@ export async function startPixiMedia() {
   }
 
   chooseButton.addEventListener("click", handleChooseClick);
+  subtitleButton.addEventListener("click", handleSubtitleClick);
+  subtitleTextInput.addEventListener("input", handleSubtitleControlChange);
+  subtitleSizeSelect.addEventListener("change", handleSubtitleControlChange);
+  subtitleFontSelect.addEventListener("change", handleSubtitleControlChange);
+  subtitleStyleSelect.addEventListener("change", handleSubtitleControlChange);
+  subtitleColorInput.addEventListener("input", handleSubtitleControlChange);
   exportButton.addEventListener("click", handleExportClick);
   input.addEventListener("change", handleInputChange);
   canvas.addEventListener("pointerdown", togglePlayback);
@@ -1488,6 +2914,18 @@ export async function startPixiMedia() {
   timeline.on("pointerup", handleTimelinePointerUp);
   timeline.on("pointerupoutside", handleTimelinePointerUp);
   timeline.on("globalpointermove", handleTimelinePointerMove);
+  playPauseButton.on("pointerdown", handlePlayPauseButtonPointerDown);
+  playPauseButton.on("pointerover", handlePlayPauseButtonPointerOver);
+  playPauseButton.on("pointerout", handlePreviewButtonPointerOut);
+  splitButton.on("pointerdown", handleSplitButtonPointerDown);
+  splitButton.on("pointerover", handleSplitButtonPointerOver);
+  splitButton.on("pointerout", handlePreviewButtonPointerOut);
+  deleteButton.on("pointerdown", handleDeleteButtonPointerDown);
+  deleteButton.on("pointerover", handleDeleteButtonPointerOver);
+  deleteButton.on("pointerout", handlePreviewButtonPointerOut);
+  editorTimeline.on("pointerup", handleTimelineClipPointerUp);
+  editorTimeline.on("pointerupoutside", handleTimelineClipPointerUp);
+  editorTimeline.on("globalpointermove", handleTimelineClipPointerMove);
   overlayImageGroup.on("pointerdown", handleImagePointerDown);
   overlayImageGroup.on("pointerup", handleImagePointerUp);
   overlayImageGroup.on("pointerupoutside", handleImagePointerUp);
@@ -1508,9 +2946,20 @@ export async function startPixiMedia() {
 
   return () => {
     clearCurrentMedia();
+    document.body.classList.remove("pixi-media-page");
     chooseButton.removeEventListener("click", handleChooseClick);
+    subtitleButton.removeEventListener("click", handleSubtitleClick);
+    subtitleTextInput.removeEventListener("input", handleSubtitleControlChange);
+    subtitleSizeSelect.removeEventListener("change", handleSubtitleControlChange);
+    subtitleFontSelect.removeEventListener("change", handleSubtitleControlChange);
+    subtitleStyleSelect.removeEventListener("change", handleSubtitleControlChange);
+    subtitleColorInput.removeEventListener("input", handleSubtitleControlChange);
     exportButton.removeEventListener("click", handleExportClick);
     exportButton.remove();
+    subtitleButton.remove();
+    subtitleControls.remove();
+    toolbarLeft.remove();
+    toolbarRight.remove();
     input.removeEventListener("change", handleInputChange);
     canvas.removeEventListener("pointerdown", togglePlayback);
     window.removeEventListener("resize", resizeCanvas);
@@ -1519,6 +2968,18 @@ export async function startPixiMedia() {
     timeline.off("pointerup", handleTimelinePointerUp);
     timeline.off("pointerupoutside", handleTimelinePointerUp);
     timeline.off("globalpointermove", handleTimelinePointerMove);
+    playPauseButton.off("pointerdown", handlePlayPauseButtonPointerDown);
+    playPauseButton.off("pointerover", handlePlayPauseButtonPointerOver);
+    playPauseButton.off("pointerout", handlePreviewButtonPointerOut);
+    splitButton.off("pointerdown", handleSplitButtonPointerDown);
+    splitButton.off("pointerover", handleSplitButtonPointerOver);
+    splitButton.off("pointerout", handlePreviewButtonPointerOut);
+    deleteButton.off("pointerdown", handleDeleteButtonPointerDown);
+    deleteButton.off("pointerover", handleDeleteButtonPointerOver);
+    deleteButton.off("pointerout", handlePreviewButtonPointerOut);
+    editorTimeline.off("pointerup", handleTimelineClipPointerUp);
+    editorTimeline.off("pointerupoutside", handleTimelineClipPointerUp);
+    editorTimeline.off("globalpointermove", handleTimelineClipPointerMove);
     overlayImageGroup.off("pointerdown", handleImagePointerDown);
     overlayImageGroup.off("pointerup", handleImagePointerUp);
     overlayImageGroup.off("pointerupoutside", handleImagePointerUp);
@@ -1532,6 +2993,8 @@ export async function startPixiMedia() {
     overlayText.off("globalpointermove", handleTextPointerMove);
     app.ticker.remove(renderScene);
     app.destroy(false);
+    timelineApp.destroy(false);
+    timelineCanvas.remove();
   };
 }
 
@@ -1543,6 +3006,24 @@ function createImageResizeHandle(corner) {
   handle.cursor = corner === "tl" || corner === "br" ? "nwse-resize" : "nesw-resize";
 
   return handle;
+}
+
+function createSelect(label, values, selectedValue) {
+  const select = document.createElement("select");
+
+  select.ariaLabel = label;
+
+  for (const value of values) {
+    const option = document.createElement("option");
+
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+
+  select.value = selectedValue;
+
+  return select;
 }
 
 function getOverlayTransitionAtTime(time, intervals, transitionSeconds) {
