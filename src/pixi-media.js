@@ -47,8 +47,12 @@ const VIDEO_THUMB_WIDTH = 92;
 const VIDEO_THUMB_HEIGHT = VIDEO_TRACK_HEIGHT - 8;
 const TIMELINE_PIXELS_PER_SECOND = 10;
 const TRACK_OVERLAP_EPSILON = 0.02;
+const CLIP_MIN_DURATION = 1;
+const CLIP_EDGE_HIT_WIDTH = 8;
 const IMAGE_CLIP_DEFAULT_DURATION = 5;
 const VIDEO_FRAME_MIN_INTERVAL = 1 / 30;
+const MEDIA_SYNC_SEEK_THRESHOLD = 0.28;
+const MEDIA_SYNC_SEEK_RETRY_THRESHOLD = 0.45;
 const TEXT_OVERLAY_INTERVALS = [
   { duration: 4, startTime: 2 },
   { duration: 7, startTime: 10 },
@@ -109,6 +113,11 @@ export async function startPixiMedia() {
   exportButton.textContent = "导出";
   exportButton.disabled = true;
 
+  const exportProgressLabel = document.createElement("span");
+  exportProgressLabel.className = "export-progress";
+  exportProgressLabel.textContent = "0%";
+  exportProgressLabel.hidden = true;
+
   const subtitleButton = document.createElement("button");
   subtitleButton.type = "button";
   subtitleButton.textContent = "字幕";
@@ -149,7 +158,7 @@ export async function startPixiMedia() {
     subtitleColorInput
   );
   toolbarLeft.append(chooseButton, subtitleButton, subtitleControls);
-  toolbarRight.append(exportButton);
+  toolbarRight.append(exportProgressLabel, exportButton);
   hud.append(toolbarLeft, toolbarRight);
 
   const input = document.createElement("input");
@@ -194,6 +203,8 @@ export async function startPixiMedia() {
   const timelineScene = new Container();
   const mediaLayer = new Container();
   const textLayer = new Container();
+  const overlayImageLayer = new Container();
+  const overlayImageExtras = new Container();
   const overlayImageGroup = new Container();
   const overlayImageSprite = new Sprite({ texture: overlayImageTexture });
   const overlayImageHandles = ["tl", "tr", "br", "bl"].map((corner) => ({
@@ -239,6 +250,7 @@ export async function startPixiMedia() {
   const editorTimelineRuler = new Graphics();
   const editorTimelineRulerLabels = new Container();
   const editorTimelineFrames = new Container();
+  const editorTimelineVideoClips = new Container();
   const editorTimelineAudioClips = new Container();
   const editorTimelineImageClips = new Container();
   const editorTimelineTrackLabels = new Container();
@@ -337,7 +349,8 @@ export async function startPixiMedia() {
     overlayImageSprite,
     ...overlayImageHandles.map((handle) => handle.node)
   );
-  textLayer.addChild(overlayImageGroup, overlayText);
+  textLayer.addChild(overlayImageLayer, overlayText);
+  overlayImageLayer.addChild(overlayImageExtras, overlayImageGroup);
   controlsLayer.addChild(timeline);
   playPauseButton.addChild(playPauseButtonBackground, playPauseButtonIcon);
   splitButton.addChild(splitButtonBackground, splitButtonLabel);
@@ -359,6 +372,7 @@ export async function startPixiMedia() {
   );
   editorTimelineTracks.addChild(
     editorTimelineFrames,
+    editorTimelineVideoClips,
     editorTimelineAudioClips,
     editorTimelineImageClips
   );
@@ -430,6 +444,8 @@ export async function startPixiMedia() {
   overlayText.eventMode = "static";
   overlayText.cursor = "grab";
   overlayText.visible = false;
+  overlayImageLayer.eventMode = "static";
+  overlayImageLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
   overlayImageGroup.eventMode = "static";
   overlayImageGroup.cursor = "move";
   overlayImageGroup.visible = false;
@@ -451,6 +467,7 @@ export async function startPixiMedia() {
   let isSeeking = false;
   let playbackTime = 0;
   let playbackPlaying = false;
+  let playbackStartPending = false;
   let videoFramePending = false;
   let videoFrameRequestId = 0;
   let videoTrackBuildId = 0;
@@ -461,6 +478,7 @@ export async function startPixiMedia() {
   let audioTimelineClips = [];
   let imageTimelineClips = [];
   let timelineObjectUrls = [];
+  let timelineEditableDuration = 1;
   let videoTrackLoading = false;
   let editorTimelineRulerDuration = -1;
   let editorTimelineRulerY = -1;
@@ -468,6 +486,9 @@ export async function startPixiMedia() {
   let wasPlayingBeforeSeek = false;
   let suppressNextCanvasToggle = false;
   let timelineClipDrag = null;
+  let timelineClipDragFrame = 0;
+  let pendingTimelineClipDragEvent = null;
+  let selectedTimelineClip = null;
   let textOverlayIntervals = [];
   let textPositionInitialized = false;
   let textDragging = false;
@@ -475,6 +496,7 @@ export async function startPixiMedia() {
   const imageFrame = { height: 0, width: 0, x: 0, y: 0 };
   const imageDragOffset = { x: 0, y: 0 };
   const imageResizeOrigin = { corner: "", oppositeX: 0, oppositeY: 0 };
+  let selectedImageClip = null;
   let imagePositionInitialized = false;
   let imageDragging = false;
   let imageResizeCorner = "";
@@ -484,15 +506,21 @@ export async function startPixiMedia() {
     app.stop();
     playbackTime = 0;
     playbackPlaying = false;
+    playbackStartPending = false;
+    timelineEditableDuration = 1;
+    timelineVerticalScroll = 0;
     videoFrameRequestId += 1;
     videoTrackBuildId += 1;
     videoFramePending = false;
     videoTrackLoading = false;
     lastVideoFrameTime = -1;
     timelineClipDrag = null;
+    cancelPendingTimelineClipDragFrame();
+    selectedTimelineClip = null;
     clearTimelineTracks();
     currentVideoFile = null;
     exportButton.disabled = true;
+    exportProgressLabel.hidden = true;
     isExporting = false;
     textOverlayIntervals = [];
     textPositionInitialized = false;
@@ -501,7 +529,9 @@ export async function startPixiMedia() {
     imagePositionInitialized = false;
     imageDragging = false;
     imageResizeCorner = "";
+    selectedImageClip = null;
     overlayImageGroup.visible = false;
+    clearExtraImageOverlays();
 
     if (videoFrameProvider) {
       videoFrameProvider.dispose();
@@ -649,9 +679,13 @@ export async function startPixiMedia() {
         duration: videoFrameProvider.duration,
         file,
         provider: videoFrameProvider,
+        sourceDuration: videoFrameProvider.duration,
+        sourceOffset: 0,
         startTime: 0,
       },
     ];
+    selectTimelineClip("video", videoTimelineClips[0]);
+    timelineEditableDuration = Math.max(1, videoFrameProvider.duration);
     statusText.textContent = `Video ${videoFrameProvider.width}x${videoFrameProvider.height}`;
     startVideoTrackBuild();
     statusText.textContent = "Click canvas to play";
@@ -700,15 +734,21 @@ export async function startPixiMedia() {
       await provider.drawFrameAt(0);
       await waitForMediaReady(video, "loadedmetadata", "video");
 
-      videoTimelineClips.push({
+      const clip = {
         audioElement: video,
         duration: provider.duration,
         file,
         provider,
+        sourceDuration: provider.duration,
+        sourceOffset: 0,
         startTime: getVideoTimelineDuration(),
-      });
+      };
 
-      startVideoTrackBuild();
+      videoTimelineClips.push(clip);
+      selectTimelineClip("video", clip);
+      updateTimelineEditableDuration();
+
+      startVideoTrackClipBuild(clip);
       drawEditorTimeline();
       statusText.textContent = "Video appended";
     } catch (error) {
@@ -735,12 +775,16 @@ export async function startPixiMedia() {
       audioElement: audio,
       duration: Number.isFinite(audio.duration) ? audio.duration : 0,
       file,
+      sourceDuration: Number.isFinite(audio.duration) ? audio.duration : 0,
+      sourceOffset: 0,
       startTime: getInsertionTime(),
       trackIndex: getNextTrackIndex(audioTimelineClips),
     };
 
     audio.pause();
     audioTimelineClips.push(clip);
+    selectTimelineClip("audio", clip);
+    updateTimelineEditableDuration();
     renderTimelineClipTracks();
     drawEditorTimeline();
     syncTimelineAudio();
@@ -770,6 +814,8 @@ export async function startPixiMedia() {
 
     timelineObjectUrls.push(url);
     imageTimelineClips.push(clip);
+    selectTimelineClip("image", clip);
+    updateTimelineEditableDuration();
     renderTimelineClipTracks();
     imagePositionInitialized = false;
     drawEditorTimeline();
@@ -833,6 +879,16 @@ export async function startPixiMedia() {
         (clip) => time >= clip.startTime && time < clip.startTime + clip.duration
       ) || null
     );
+  }
+
+  function getClipSourceOffset(clip) {
+    return Math.max(0, Number.isFinite(clip?.sourceOffset) ? clip.sourceOffset : 0);
+  }
+
+  function getClipSourceDuration(clip) {
+    const duration = Number.isFinite(clip?.sourceDuration) ? clip.sourceDuration : clip?.duration;
+
+    return Math.max(0, Number.isFinite(duration) ? duration : 0);
   }
 
   function getClipTrackIndex(clip) {
@@ -936,6 +992,36 @@ export async function startPixiMedia() {
     return Math.max(TIMELINE_PANEL_HEIGHT, timelineApp.screen.height / timelineScale);
   }
 
+  function getTrackViewportTop() {
+    return getVideoTrackY();
+  }
+
+  function getTrackViewportBottom() {
+    return getEditorPanelY() + getEditorPanelHeight() - 8;
+  }
+
+  function getTrackContentBottom() {
+    const audioBottom = getAudioTrackY(Math.max(0, getAudioTrackCount() - 1)) + AUDIO_TRACK_HEIGHT;
+    const imageBottom = getImageTrackY(Math.max(0, getImageTrackCount() - 1)) + IMAGE_TRACK_HEIGHT;
+
+    return Math.max(getVideoTrackY() + VIDEO_TRACK_HEIGHT, audioBottom, imageBottom);
+  }
+
+  function getMaxTimelineVerticalScroll() {
+    return Math.max(0, getTrackContentBottom() - getTrackViewportBottom());
+  }
+
+  function clampTimelineVerticalScroll() {
+    timelineVerticalScroll = Math.min(
+      Math.max(Number.isFinite(timelineVerticalScroll) ? timelineVerticalScroll : 0, 0),
+      getMaxTimelineVerticalScroll()
+    );
+  }
+
+  function getScrolledTrackY(y) {
+    return y - timelineVerticalScroll;
+  }
+
   function getEditorPanelWidth() {
     return Math.max(1, getTimelineViewportWidth() - EDITOR_PANEL_X * 2);
   }
@@ -1009,15 +1095,99 @@ export async function startPixiMedia() {
 
   function syncTimelineAudio() {
     for (const clip of videoTimelineClips) {
-      syncClipMediaElement(clip.audioElement, clip.startTime, clip.duration);
+      syncClipMediaElement(
+        clip.audioElement,
+        clip.startTime,
+        clip.duration,
+        getClipSourceOffset(clip)
+      );
     }
 
     for (const clip of audioTimelineClips) {
-      syncClipMediaElement(clip.audioElement, clip.startTime, clip.duration);
+      syncClipMediaElement(
+        clip.audioElement,
+        clip.startTime,
+        clip.duration,
+        getClipSourceOffset(clip)
+      );
     }
   }
 
-  function syncClipMediaElement(element, startTime, duration) {
+  async function prepareTimelinePlaybackStart() {
+    await Promise.all([preloadCurrentVideoFrame(), prepareTimelineAudioForPlayback()]);
+  }
+
+  async function prepareTimelineAudioForPlayback() {
+    const prepareTasks = [];
+
+    for (const clip of videoTimelineClips) {
+      prepareTasks.push(prepareClipMediaElement(clip));
+    }
+
+    for (const clip of audioTimelineClips) {
+      prepareTasks.push(prepareClipMediaElement(clip));
+    }
+
+    await Promise.all(prepareTasks);
+  }
+
+  async function prepareClipMediaElement(clip) {
+    const element = clip.audioElement;
+
+    if (!element) {
+      return;
+    }
+
+    const localTime = playbackTime - clip.startTime;
+
+    if (localTime < 0 || localTime >= clip.duration || clip.duration <= 0) {
+      element.pause();
+      return;
+    }
+
+    const visibleTime = Math.min(Math.max(localTime, 0), Math.max(0, clip.duration - 0.02));
+    const sourceTime = getClipSourceOffset(clip) + visibleTime;
+    const safeTime = Number.isFinite(element.duration)
+      ? Math.min(sourceTime, Math.max(0, element.duration - 0.02))
+      : sourceTime;
+
+    if (
+      !Number.isFinite(element.duration) ||
+      Math.abs(element.currentTime - safeTime) <= MEDIA_SYNC_SEEK_THRESHOLD
+    ) {
+      return;
+    }
+
+    await seekMediaElement(element, safeTime);
+  }
+
+  function seekMediaElement(element, time) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const cleanup = () => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        element.__timelineSeekPending = false;
+        element.removeEventListener("seeked", cleanup);
+        window.clearTimeout(timeoutId);
+        window.clearTimeout(element.__timelineSeekTimeout);
+        resolve();
+      };
+      const timeoutId = window.setTimeout(cleanup, 350);
+
+      element.__timelineSeekPending = true;
+      element.__timelineSeekTarget = time;
+      element.__timelineSeekTimeout = timeoutId;
+      element.pause();
+      element.addEventListener("seeked", cleanup, { once: true });
+      element.currentTime = time;
+    });
+  }
+
+  function syncClipMediaElement(element, startTime, duration, sourceOffset = 0) {
     if (!element) {
       return;
     }
@@ -1027,13 +1197,49 @@ export async function startPixiMedia() {
 
     if (!shouldPlay) {
       element.pause();
+      element.__timelineSeekPending = false;
+      window.clearTimeout(element.__timelineSeekTimeout);
       return;
     }
 
-    const safeTime = Math.min(Math.max(localTime, 0), Math.max(0, duration - 0.02));
+    const visibleTime = Math.min(Math.max(localTime, 0), Math.max(0, duration - 0.02));
+    const rawTime = Math.max(0, sourceOffset) + visibleTime;
+    const safeTime = Number.isFinite(element.duration)
+      ? Math.min(rawTime, Math.max(0, element.duration - 0.02))
+      : rawTime;
 
-    if (Number.isFinite(element.duration) && Math.abs(element.currentTime - safeTime) > 0.08) {
-      element.currentTime = safeTime;
+    if (
+      Number.isFinite(element.duration) &&
+      Math.abs(element.currentTime - safeTime) > MEDIA_SYNC_SEEK_THRESHOLD
+    ) {
+      const pendingTarget = Number.isFinite(element.__timelineSeekTarget)
+        ? element.__timelineSeekTarget
+        : Number.NaN;
+      const shouldSeek =
+        !element.__timelineSeekPending ||
+        Math.abs(pendingTarget - safeTime) > MEDIA_SYNC_SEEK_RETRY_THRESHOLD;
+
+      if (shouldSeek) {
+        element.__timelineSeekPending = true;
+        element.__timelineSeekTarget = safeTime;
+        window.clearTimeout(element.__timelineSeekTimeout);
+        element.__timelineSeekTimeout = window.setTimeout(() => {
+          element.__timelineSeekPending = false;
+        }, 350);
+        element.addEventListener(
+          "seeked",
+          () => {
+            element.__timelineSeekPending = false;
+            window.clearTimeout(element.__timelineSeekTimeout);
+          },
+          { once: true }
+        );
+        element.currentTime = safeTime;
+      }
+
+      if (element.__timelineSeekPending) {
+        return;
+      }
     }
 
     if (element.paused) {
@@ -1054,7 +1260,7 @@ export async function startPixiMedia() {
   }
 
   async function startTimelinePlayback() {
-    if (currentKind !== "video") {
+    if (currentKind !== "video" || playbackStartPending) {
       return;
     }
 
@@ -1066,6 +1272,19 @@ export async function startPixiMedia() {
 
     if (playbackTime >= duration - 0.001) {
       playbackTime = 0;
+    }
+
+    playbackStartPending = true;
+    statusText.textContent = "Preparing";
+
+    try {
+      await prepareTimelinePlaybackStart();
+    } finally {
+      playbackStartPending = false;
+    }
+
+    if (currentKind !== "video") {
+      return;
     }
 
     playbackPlaying = true;
@@ -1133,28 +1352,24 @@ export async function startPixiMedia() {
 
   function updateImageOverlayPosition() {
     const rect = getMediaSpriteRect();
-    const activeClip = getActiveImageTimelineClip();
+    const activeClips = getActiveImageTimelineClips();
+    const activeClip = getSelectedImageClip(activeClips);
 
     if (!rect || currentKind !== "video" || !activeClip) {
       overlayImageGroup.visible = false;
+      clearExtraImageOverlays();
       return;
     }
 
+    selectedImageClip = activeClip;
+    overlayImageLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
     overlayImageSprite.texture = activeClip.texture;
 
-    if (!imagePositionInitialized) {
-      const aspectRatio = getOverlayImageAspectRatio();
-      const width = Math.min(rect.width * 0.5, rect.height * aspectRatio);
-      const height = width / aspectRatio;
-
-      imageFrame.width = width;
-      imageFrame.height = height;
-      imageFrame.x = rect.left + (rect.width - width) / 2;
-      imageFrame.y = rect.top + (rect.height - height) / 2;
-      imagePositionInitialized = true;
-    }
+    Object.assign(imageFrame, getImageClipFrame(activeClip, rect));
+    imagePositionInitialized = true;
 
     clampImageToMediaRect();
+    saveActiveImageFrame();
     layoutImageOverlay();
     const transition = getCurrentOverlayTransition([
       { duration: activeClip.duration, startTime: activeClip.startTime },
@@ -1163,6 +1378,10 @@ export async function startPixiMedia() {
     overlayImageGroup.alpha = transition.alpha;
     overlayImageSprite.scale.x *= transition.yScale;
     overlayImageGroup.visible = overlayImageGroup.alpha > 0;
+    renderExtraImageOverlays(
+      rect,
+      activeClips.filter((clip) => clip !== activeClip)
+    );
   }
 
   function clampTextToMediaRect() {
@@ -1185,14 +1404,67 @@ export async function startPixiMedia() {
     );
   }
 
-  function getOverlayImageAspectRatio() {
-    const activeClip = getActiveImageTimelineClip();
+  function getOverlayImageAspectRatio(clip = getActiveImageTimelineClip()) {
+    const activeClip = clip;
     const texture = activeClip?.texture || overlayImageTexture;
     const element = activeClip?.imageElement || overlayImageElement;
     const width = texture.width || element.naturalWidth || 1;
     const height = texture.height || element.naturalHeight || 1;
 
     return width / height;
+  }
+
+  function getImageClipFrame(clip, rect) {
+    if (!clip.imageFrame) {
+      clip.imageFrame = getDefaultImageFrame(rect, clip);
+    }
+
+    return clip.imageFrame;
+  }
+
+  function getDefaultImageFrame(rect, clip) {
+    const aspectRatio = getOverlayImageAspectRatio(clip);
+    const width = Math.min(rect.width * 0.5, rect.height * aspectRatio);
+    const height = width / aspectRatio;
+    const offset = getClipTrackIndex(clip) * 24;
+
+    return {
+      height,
+      width,
+      x: Math.min(
+        Math.max(rect.left + (rect.width - width) / 2 + offset, rect.left),
+        rect.right - width
+      ),
+      y: Math.min(
+        Math.max(rect.top + (rect.height - height) / 2 + offset, rect.top),
+        rect.bottom - height
+      ),
+    };
+  }
+
+  function saveActiveImageFrame() {
+    const activeClip = getActiveImageTimelineClip();
+
+    if (!activeClip) {
+      return;
+    }
+
+    activeClip.imageFrame = { ...imageFrame };
+  }
+
+  function selectImageOverlayClip(clip) {
+    const rect = getMediaSpriteRect();
+
+    if (!clip || !rect) {
+      return;
+    }
+
+    selectedImageClip = clip;
+    if (imageTimelineClips.includes(clip)) {
+      selectedTimelineClip = { clip, type: "image" };
+    }
+    Object.assign(imageFrame, getImageClipFrame(clip, rect));
+    imagePositionInitialized = true;
   }
 
   function clampImageToMediaRect() {
@@ -1226,6 +1498,42 @@ export async function startPixiMedia() {
         handle.corner.includes("l") ? 0 : imageFrame.width,
         handle.corner.includes("t") ? 0 : imageFrame.height
       );
+    }
+  }
+
+  function clearExtraImageOverlays() {
+    overlayImageExtras.removeChildren().forEach((child) => child.destroy({ children: true }));
+  }
+
+  function renderExtraImageOverlays(rect, clips) {
+    clearExtraImageOverlays();
+
+    for (const clip of clips) {
+      const frame = getImageClipFrame(clip, rect);
+      const transition = getCurrentOverlayTransition([
+        { duration: clip.duration, startTime: clip.startTime },
+      ]);
+
+      if (transition.alpha <= 0) {
+        continue;
+      }
+
+      const group = new Container();
+      const sprite = new Sprite({ texture: clip.texture });
+
+      group.position.set(frame.x, frame.y);
+      group.alpha = transition.alpha;
+      group.eventMode = "static";
+      group.cursor = "move";
+      group.hitArea = new Rectangle(0, 0, frame.width, frame.height);
+      group.on("pointerdown", (event) => handleExtraImagePointerDown(clip, event));
+      sprite.anchor.set(0.5);
+      sprite.position.set(frame.width / 2, frame.height / 2);
+      sprite.width = frame.width;
+      sprite.height = frame.height;
+      sprite.scale.x *= transition.yScale;
+      group.addChild(sprite);
+      overlayImageExtras.addChild(group);
     }
   }
 
@@ -1324,24 +1632,13 @@ export async function startPixiMedia() {
     }
 
     clip.provider
-      .drawFrameAt(frameTime - clip.startTime)
+      .drawFrameAt(getClipSourceOffset(clip) + frameTime - clip.startTime)
       .then((frame) => {
         if (requestId !== videoFrameRequestId || currentKind !== "video" || !frame) {
           return;
         }
 
-        if (frame.canvas !== videoFrameProvider.canvas) {
-          drawCanvasIntoPreview(frame.canvas);
-        }
-
-        mediaTexture?.source?.update?.();
-        mediaTexture?.update?.();
-        fitMediaSprite();
-        updateImageOverlayPosition();
-        updateTextOverlayPosition();
-        drawTimeline();
-        drawEditorTimeline();
-        app.render();
+        applyDecodedVideoFrame(frame);
       })
       .catch((error) => {
         if (requestId === videoFrameRequestId) {
@@ -1363,6 +1660,63 @@ export async function startPixiMedia() {
           updateVideoTexture();
         }
       });
+  }
+
+  async function preloadCurrentVideoFrame() {
+    if (currentKind !== "video" || !mediaTexture?.source || !videoFrameProvider) {
+      return;
+    }
+
+    const frameTime = playbackTime;
+    const clip = getActiveVideoTimelineClip(frameTime);
+
+    if (!clip?.provider) {
+      drawCanvasIntoPreview(null);
+      mediaTexture.source.update();
+      mediaTexture.update?.();
+      app.render();
+      return;
+    }
+
+    const requestId = videoFrameRequestId + 1;
+
+    videoFrameRequestId = requestId;
+    videoFramePending = true;
+    lastVideoFrameTime = frameTime;
+
+    try {
+      const frame = await clip.provider.drawFrameAt(
+        getClipSourceOffset(clip) + frameTime - clip.startTime
+      );
+
+      if (requestId === videoFrameRequestId && currentKind === "video" && frame) {
+        applyDecodedVideoFrame(frame);
+      }
+    } catch (error) {
+      if (requestId === videoFrameRequestId) {
+        statusText.textContent =
+          error instanceof Error ? error.message : "Failed to decode video frame.";
+      }
+    } finally {
+      if (requestId === videoFrameRequestId) {
+        videoFramePending = false;
+      }
+    }
+  }
+
+  function applyDecodedVideoFrame(frame) {
+    if (frame.canvas !== videoFrameProvider?.canvas) {
+      drawCanvasIntoPreview(frame.canvas);
+    }
+
+    mediaTexture?.source?.update?.();
+    mediaTexture?.update?.();
+    fitMediaSprite();
+    updateImageOverlayPosition();
+    updateTextOverlayPosition();
+    drawTimeline();
+    drawEditorTimeline();
+    app.render();
   }
 
   function isSeekableMedia() {
@@ -1585,17 +1939,44 @@ export async function startPixiMedia() {
 
   function clearVideoTrackFrames() {
     editorTimelineFrames.removeChildren().forEach((child) => child.destroy());
+    editorTimelineVideoClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    videoTimelineClips.forEach((clip) => {
+      clip.timelineContainer = null;
+    });
     videoTrackTextures.forEach((texture) => texture.destroy(true));
     videoTrackTextures = [];
   }
 
+  function clearVideoTrackFramesForClip(clip) {
+    const children = editorTimelineFrames.children.filter((child) => child.timelineClip === clip);
+
+    for (const child of children) {
+      const texture = child.texture;
+
+      editorTimelineFrames.removeChild(child);
+      child.destroy();
+
+      if (texture && !texture.destroyed) {
+        texture.destroy(true);
+      }
+
+      videoTrackTextures = videoTrackTextures.filter((item) => item !== texture);
+    }
+  }
+
   function clearAudioTrackClips() {
     editorTimelineAudioClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    audioTimelineClips.forEach((clip) => {
+      clip.timelineContainer = null;
+    });
     audioTrackGraphics = [];
   }
 
   function clearImageTrackClips({ destroyTextures = false } = {}) {
     editorTimelineImageClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    imageTimelineClips.forEach((clip) => {
+      clip.timelineContainer = null;
+    });
     if (destroyTextures) {
       imageTrackTextures.forEach((texture) => texture.destroy(true));
     }
@@ -1604,6 +1985,7 @@ export async function startPixiMedia() {
 
   function clearTimelineTracks() {
     pauseTimelineAudio();
+    selectedTimelineClip = null;
     clearVideoTrackFrames();
     clearAudioTrackClips();
     clearImageTrackClips({ destroyTextures: true });
@@ -1645,9 +2027,11 @@ export async function startPixiMedia() {
     editorTimelineBackground.clear();
     editorTimelinePlayhead.clear();
     editorTimelineMask.clear();
+    editorTimelineTrackMask.clear();
     editorTimelineTrackLabels.removeChildren().forEach((child) => child.destroy());
     editorTimelineStatus.text = "";
     editorTimelineContent.x = 0;
+    editorTimelineTracks.y = 0;
     timelineApp.render();
   }
 
@@ -1666,8 +2050,10 @@ export async function startPixiMedia() {
     const playheadX = getEditorPlayheadX();
     const duration = getTimelineDuration();
     const currentTime = Math.min(Math.max(playbackTime, 0), duration);
+    clampTimelineVerticalScroll();
     buildEditorTimelineRuler(duration);
     editorTimelineContent.x = playheadX - currentTime * TIMELINE_PIXELS_PER_SECOND;
+    editorTimelineTracks.y = -timelineVerticalScroll;
     editorTimeline.hitArea = new Rectangle(EDITOR_PANEL_X, panelY, panelWidth, panelHeight);
 
     editorTimeline.visible = true;
@@ -1692,6 +2078,15 @@ export async function startPixiMedia() {
 
     editorTimelineMask.clear();
     editorTimelineMask.rect(trackX, panelY, trackWidth, panelHeight).fill(0xffffff);
+    editorTimelineTrackMask.clear();
+    editorTimelineTrackMask
+      .rect(
+        trackX,
+        getTrackViewportTop(),
+        trackWidth,
+        Math.max(1, getTrackViewportBottom() - getTrackViewportTop())
+      )
+      .fill(0xffffff);
 
     editorTimelinePlayhead.clear();
     editorTimelinePlayhead
@@ -1702,6 +2097,7 @@ export async function startPixiMedia() {
     editorTimelineStatus.position.set(playheadX, panelY + 14);
     drawEditorTrackLabels();
     layoutVideoTrackFrames();
+    renderVideoTimelineClipOverlays();
 
     if (!videoTrackLoading && videoTrackTextures.length > 0) {
       editorTimelineStatus.text = "";
@@ -1715,8 +2111,14 @@ export async function startPixiMedia() {
   }
 
   function drawTrackBackground(y, height) {
+    const scrolledY = getScrolledTrackY(y);
+
+    if (scrolledY + height < getTrackViewportTop() || scrolledY > getTrackViewportBottom()) {
+      return;
+    }
+
     editorTimelineBackground
-      .roundRect(getVideoTrackX(), y, getVideoTrackWidth(), height, 6)
+      .roundRect(getVideoTrackX(), scrolledY, getVideoTrackWidth(), height, 6)
       .fill({ color: 0x111827, alpha: 0.98 })
       .stroke({ color: 0x475569, width: 1 });
   }
@@ -1725,6 +2127,18 @@ export async function startPixiMedia() {
     const y = getVideoTrackY() + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
 
     for (const child of editorTimelineFrames.children) {
+      const clip = child.timelineClip;
+      const frameCount = Math.max(1, child.timelineFrameCount || 1);
+      const frameIndex = Math.max(0, child.timelineFrameIndex || 0);
+
+      if (clip) {
+        const clipWidth = getEditorTimelineContentWidth(clip.duration);
+        const frameWidth = clipWidth / frameCount;
+
+        child.x = clip.startTime * TIMELINE_PIXELS_PER_SECOND + frameIndex * frameWidth;
+        child.width = Math.ceil(frameWidth) + 1;
+      }
+
       child.y = y;
       child.height = VIDEO_THUMB_HEIGHT;
     }
@@ -1744,6 +2158,12 @@ export async function startPixiMedia() {
   }
 
   function addEditorTrackLabel(text, y) {
+    const scrolledY = getScrolledTrackY(y);
+
+    if (scrolledY < getTrackViewportTop() || scrolledY > getTrackViewportBottom()) {
+      return;
+    }
+
     const label = new Text({
       text,
       style: {
@@ -1755,7 +2175,7 @@ export async function startPixiMedia() {
     });
 
     label.anchor.set(0, 0.5);
-    label.position.set(EDITOR_PANEL_X + 14, y);
+    label.position.set(EDITOR_PANEL_X + 14, scrolledY);
     editorTimelineTrackLabels.addChild(label);
   }
 
@@ -1827,44 +2247,15 @@ export async function startPixiMedia() {
     drawEditorTimeline();
 
     (async () => {
+      let frameCount = 0;
+
       for (const clip of videoTimelineClips) {
-        const clipWidth = getEditorTimelineContentWidth(clip.duration);
-        const clipMaxFrames = Math.max(
-          1,
-          Math.min(maxFrames, Math.ceil(clipWidth / VIDEO_THUMB_WIDTH))
-        );
-        const intervalSeconds = Math.max(0.1, clip.duration / clipMaxFrames);
-        const frames = await extractVideoFramesWithMediabunny(clip.file, {
-          fit: "cover",
-          includeLastFrame: true,
-          intervalSeconds,
-          maxFrames: clipMaxFrames,
-          poolSize: 3,
-          thumbnailHeight: VIDEO_THUMB_HEIGHT,
-          thumbnailWidth: VIDEO_THUMB_WIDTH,
-        });
-
-        if (buildId !== videoTrackBuildId || currentKind !== "video") {
-          return;
-        }
-
-        frames.forEach((frame, index) => {
-          const texture = Texture.from(frame.canvas, true);
-          const sprite = new Sprite({ texture });
-          const frameWidth = clipWidth / frames.length;
-
-          sprite.x = clip.startTime * TIMELINE_PIXELS_PER_SECOND + index * frameWidth;
-          sprite.y = getVideoTrackY() + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
-          sprite.width = Math.ceil(frameWidth) + 1;
-          sprite.height = VIDEO_THUMB_HEIGHT;
-          videoTrackTextures.push(texture);
-          editorTimelineFrames.addChild(sprite);
-        });
+        frameCount += await buildVideoTrackClipFrames(clip, buildId, maxFrames);
       }
 
       if (buildId === videoTrackBuildId) {
         buildEditorTimelineRuler(getTimelineDuration());
-        editorTimelineStatus.text = videoTrackTextures.length ? "" : "No frames";
+        editorTimelineStatus.text = frameCount > 0 || videoTrackTextures.length ? "" : "No frames";
       }
     })()
       .catch((error) => {
@@ -1882,6 +2273,156 @@ export async function startPixiMedia() {
       });
   }
 
+  function startVideoTrackClipBuild(clip) {
+    const buildId = videoTrackBuildId + 1;
+    const timelineDuration = getTimelineDuration();
+    const contentWidth = getEditorTimelineContentWidth(timelineDuration);
+    const maxFrames = Math.max(1, Math.min(420, Math.ceil(contentWidth / VIDEO_THUMB_WIDTH)));
+
+    videoTrackBuildId = buildId;
+    videoTrackLoading = true;
+    clearVideoTrackFramesForClip(clip);
+    clearEditorTimelineRuler();
+    editorTimelineStatus.text = "Loading frames";
+
+    (async () => {
+      const frameCount = await buildVideoTrackClipFrames(clip, buildId, maxFrames);
+
+      if (buildId === videoTrackBuildId) {
+        buildEditorTimelineRuler(getTimelineDuration());
+        editorTimelineStatus.text = frameCount > 0 || videoTrackTextures.length ? "" : "No frames";
+      }
+    })()
+      .catch((error) => {
+        if (buildId === videoTrackBuildId) {
+          editorTimelineStatus.text =
+            error instanceof Error ? error.message : "Failed to load frames";
+        }
+      })
+      .finally(() => {
+        if (buildId === videoTrackBuildId) {
+          videoTrackLoading = false;
+          drawEditorTimeline();
+          app.render();
+        }
+      });
+  }
+
+  async function buildVideoTrackClipFrames(clip, buildId, maxFrames) {
+    const clipWidth = getEditorTimelineContentWidth(clip.duration);
+    const clipMaxFrames = Math.max(
+      1,
+      Math.min(maxFrames, Math.ceil(clipWidth / VIDEO_THUMB_WIDTH))
+    );
+    const intervalSeconds = Math.max(0.1, clip.duration / clipMaxFrames);
+    const frames = await extractVideoFramesWithMediabunny(clip.file, {
+      duration: clip.duration,
+      fit: "cover",
+      includeLastFrame: true,
+      intervalSeconds,
+      maxFrames: clipMaxFrames,
+      poolSize: 3,
+      startTime: getClipSourceOffset(clip),
+      thumbnailHeight: VIDEO_THUMB_HEIGHT,
+      thumbnailWidth: VIDEO_THUMB_WIDTH,
+    });
+
+    if (buildId !== videoTrackBuildId || currentKind !== "video") {
+      return 0;
+    }
+
+    frames.forEach((frame, index) => {
+      const texture = Texture.from(frame.canvas, true);
+      const sprite = new Sprite({ texture });
+      const frameWidth = clipWidth / frames.length;
+
+      sprite.timelineClip = clip;
+      sprite.timelineFrameIndex = index;
+      sprite.timelineFrameCount = frames.length;
+      sprite.x = clip.startTime * TIMELINE_PIXELS_PER_SECOND + index * frameWidth;
+      sprite.y = getVideoTrackY() + (VIDEO_TRACK_HEIGHT - VIDEO_THUMB_HEIGHT) / 2;
+      sprite.width = Math.ceil(frameWidth) + 1;
+      sprite.height = VIDEO_THUMB_HEIGHT;
+      videoTrackTextures.push(texture);
+      editorTimelineFrames.addChild(sprite);
+    });
+
+    return frames.length;
+  }
+
+  function renderVideoTimelineClipOverlays() {
+    editorTimelineVideoClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    videoTimelineClips.forEach((clip) => {
+      clip.timelineContainer = null;
+    });
+
+    if (videoTimelineClips.length === 0) {
+      return;
+    }
+
+    const y = getVideoTrackY() + 2;
+    const height = VIDEO_TRACK_HEIGHT - 4;
+
+    for (const clip of videoTimelineClips) {
+      const container = new Container();
+      const graphic = new Graphics();
+      const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+      const selected = isSelectedTimelineClip("video", clip);
+
+      container.position.set(clip.startTime * TIMELINE_PIXELS_PER_SECOND, y);
+      clip.timelineContainer = container;
+      container.eventMode = "static";
+      container.cursor = playbackPlaying ? "default" : "grab";
+      container.hitArea = new Rectangle(0, 0, width, height);
+      container.on("pointerdown", (event) =>
+        handleTimelineClipPointerDown("video", clip, event, container)
+      );
+
+      graphic
+        .roundRect(0, 0, width, height, 5)
+        .fill({ color: 0x000000, alpha: selected ? 0.14 : 0.02 })
+        .stroke({
+          color: selected ? 0xf8fafc : 0x38bdf8,
+          alpha: selected ? 0.95 : 0.45,
+          width: selected ? 2 : 1,
+        });
+      drawClipEdgeHandles(graphic, width, height, 0x38bdf8);
+      container.addChild(
+        graphic,
+        createClipEdgeHandle("trim-start", "video", clip, width, height, container),
+        createClipEdgeHandle("trim-end", "video", clip, width, height, container)
+      );
+      editorTimelineVideoClips.addChild(container);
+    }
+  }
+
+  function drawClipEdgeHandles(graphic, width, height, color) {
+    const leftX = Math.min(CLIP_EDGE_HIT_WIDTH, width / 2);
+    const rightX = Math.max(width - CLIP_EDGE_HIT_WIDTH, width / 2);
+
+    graphic
+      .moveTo(leftX, 6)
+      .lineTo(leftX, height - 6)
+      .moveTo(rightX, 6)
+      .lineTo(rightX, height - 6)
+      .stroke({ color, alpha: 0.72, width: 2 });
+  }
+
+  function createClipEdgeHandle(mode, type, clip, width, height, targetContainer) {
+    const handle = new Container();
+    const hitWidth = Math.min(Math.max(CLIP_EDGE_HIT_WIDTH * 1.5, 12), Math.max(width / 2, 1));
+
+    handle.position.set(mode === "trim-start" ? 0 : Math.max(0, width - hitWidth), 0);
+    handle.eventMode = "static";
+    handle.cursor = playbackPlaying ? "default" : "ew-resize";
+    handle.hitArea = new Rectangle(0, 0, hitWidth, height);
+    handle.on("pointerdown", (event) =>
+      handleTimelineClipPointerDown(type, clip, event, targetContainer, mode)
+    );
+
+    return handle;
+  }
+
   function renderAudioTimelineClip(clip, samples = null) {
     const container = new Container();
     const graphic = new Graphics();
@@ -1889,24 +2430,36 @@ export async function startPixiMedia() {
     const y = getAudioTrackY(getClipTrackIndex(clip)) + 2;
     const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
     const height = AUDIO_TRACK_HEIGHT - 4;
+    const selected = isSelectedTimelineClip("audio", clip);
 
     container.position.set(x, y);
+    clip.timelineContainer = container;
     container.eventMode = "static";
     container.cursor = playbackPlaying ? "default" : "grab";
     container.hitArea = new Rectangle(0, 0, width, height);
-    container.on("pointerdown", (event) => handleTimelineClipPointerDown("audio", clip, event));
+    container.on("pointerdown", (event) =>
+      handleTimelineClipPointerDown("audio", clip, event, container)
+    );
 
     graphic
       .roundRect(0, 0, width, height, 5)
-      .fill({ color: 0x1e3a8a, alpha: 0.88 })
-      .stroke({ color: 0x38bdf8, width: 1 });
+      .fill({ color: 0x1e3a8a, alpha: selected ? 0.96 : 0.88 })
+      .stroke({ color: selected ? 0xf8fafc : 0x38bdf8, width: selected ? 2 : 1 });
+    drawClipEdgeHandles(graphic, width, height, 0x93c5fd);
 
     const barCount = Math.max(8, Math.floor(width / 3));
     const barWidth = Math.max(1, width / barCount - 1);
 
     for (let index = 0; index < barCount; index += 1) {
+      const sampleRatio = samples
+        ? Math.min(
+            0.999,
+            (getClipSourceOffset(clip) + (index / barCount) * clip.duration) /
+              Math.max(CLIP_MIN_DURATION, getClipSourceDuration(clip))
+          )
+        : 0;
       const value = samples
-        ? samples[Math.floor((index / barCount) * samples.length)]
+        ? samples[Math.floor(sampleRatio * samples.length)]
         : 0.35 + 0.25 * Math.sin(index * 1.7);
       const barHeight = Math.max(2, Math.abs(value) * (height - 6));
       const barX = index * (width / barCount);
@@ -1918,9 +2471,39 @@ export async function startPixiMedia() {
       });
     }
 
-    container.addChild(graphic);
+    container.addChild(
+      graphic,
+      createClipEdgeHandle("trim-start", "audio", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "audio", clip, width, height, container)
+    );
     editorTimelineAudioClips.addChild(container);
     audioTrackGraphics.push(container);
+  }
+
+  function drawAudioWaveform(graphic, clip, width, height, samples = null) {
+    const barCount = Math.max(8, Math.floor(width / 3));
+    const barWidth = Math.max(1, width / barCount - 1);
+
+    for (let index = 0; index < barCount; index += 1) {
+      const sampleRatio = samples
+        ? Math.min(
+            0.999,
+            (getClipSourceOffset(clip) + (index / barCount) * clip.duration) /
+              Math.max(CLIP_MIN_DURATION, getClipSourceDuration(clip))
+          )
+        : 0;
+      const value = samples
+        ? samples[Math.floor(sampleRatio * samples.length)]
+        : 0.35 + 0.25 * Math.sin(index * 1.7);
+      const barHeight = Math.max(2, Math.abs(value) * (height - 6));
+      const barX = index * (width / barCount);
+      const barY = height / 2 - barHeight / 2;
+
+      graphic.roundRect(barX, barY, barWidth, barHeight, 2).fill({
+        color: 0x93c5fd,
+        alpha: 0.88,
+      });
+    }
   }
 
   async function drawAudioSpectrum(clip) {
@@ -1960,17 +2543,22 @@ export async function startPixiMedia() {
     const y = getImageTrackY(getClipTrackIndex(clip)) + 2;
     const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
     const height = IMAGE_TRACK_HEIGHT - 4;
+    const selected = isSelectedTimelineClip("image", clip);
 
     container.position.set(x, y);
+    clip.timelineContainer = container;
     container.eventMode = "static";
     container.cursor = playbackPlaying ? "default" : "grab";
     container.hitArea = new Rectangle(0, 0, width, height);
-    container.on("pointerdown", (event) => handleTimelineClipPointerDown("image", clip, event));
+    container.on("pointerdown", (event) =>
+      handleTimelineClipPointerDown("image", clip, event, container)
+    );
 
     background
       .roundRect(0, 0, width, height, 5)
-      .fill({ color: 0x3f2d0b, alpha: 0.9 })
-      .stroke({ color: 0xfbbf24, width: 1 });
+      .fill({ color: 0x3f2d0b, alpha: selected ? 0.98 : 0.9 })
+      .stroke({ color: selected ? 0xf8fafc : 0xfbbf24, width: selected ? 2 : 1 });
+    drawClipEdgeHandles(background, width, height, 0xfde68a);
 
     sprite.x = 3;
     sprite.y = 3;
@@ -1979,7 +2567,12 @@ export async function startPixiMedia() {
     if (!imageTrackTextures.includes(clip.texture)) {
       imageTrackTextures.push(clip.texture);
     }
-    container.addChild(background, sprite);
+    container.addChild(
+      background,
+      sprite,
+      createClipEdgeHandle("trim-start", "image", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "image", clip, width, height, container)
+    );
     editorTimelineImageClips.addChild(container);
   }
 
@@ -1988,6 +2581,115 @@ export async function startPixiMedia() {
     clearImageTrackClips();
     audioTimelineClips.forEach((clip) => renderAudioTimelineClip(clip, clip.samples || null));
     imageTimelineClips.forEach((clip) => renderImageTimelineClip(clip));
+  }
+
+  function updateTimelineClipDragPreview() {
+    if (!timelineClipDrag) {
+      return;
+    }
+
+    const { clip, mode, targetContainer, targetStartTime, targetTrackIndex, type } =
+      timelineClipDrag;
+    const container = targetContainer || clip.timelineContainer;
+
+    if (!container || container.destroyed) {
+      return;
+    }
+
+    const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+    const height = getTimelineClipHeight(type) - 4;
+
+    container.position.set(
+      targetStartTime * TIMELINE_PIXELS_PER_SECOND,
+      getTimelineClipY(type, targetTrackIndex) + 2
+    );
+    container.hitArea = new Rectangle(0, 0, width, height);
+
+    if (type === "video") {
+      layoutVideoTrackFrames();
+    }
+
+    if (mode !== "move") {
+      redrawTimelineClipDragPreviewContent(container, type, clip, width, height);
+    }
+
+    timelineApp.render();
+  }
+
+  function redrawTimelineClipDragPreviewContent(container, type, clip, width, height) {
+    container.removeChildren().forEach((child) => child.destroy({ children: true }));
+
+    if (type === "audio") {
+      addAudioTimelineClipContent(container, clip, width, height);
+    } else if (type === "image") {
+      addImageTimelineClipContent(container, clip, width, height);
+    } else {
+      const graphic = new Graphics();
+
+      graphic
+        .roundRect(0, 0, width, height, 5)
+        .fill({ color: 0x000000, alpha: 0.14 })
+        .stroke({ color: 0xf8fafc, width: 2 });
+      drawClipEdgeHandles(graphic, width, height, 0x38bdf8);
+      container.addChild(
+        graphic,
+        createClipEdgeHandle("trim-start", "video", clip, width, height, container),
+        createClipEdgeHandle("trim-end", "video", clip, width, height, container)
+      );
+    }
+  }
+
+  function addAudioTimelineClipContent(container, clip, width, height) {
+    const graphic = new Graphics();
+
+    graphic
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x1e3a8a, alpha: 0.96 })
+      .stroke({ color: 0xf8fafc, width: 2 });
+    drawClipEdgeHandles(graphic, width, height, 0x93c5fd);
+    drawAudioWaveform(graphic, clip, width, height, clip.samples || null);
+    container.addChild(
+      graphic,
+      createClipEdgeHandle("trim-start", "audio", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "audio", clip, width, height, container)
+    );
+  }
+
+  function addImageTimelineClipContent(container, clip, width, height) {
+    const background = new Graphics();
+    const sprite = new Sprite({ texture: clip.texture });
+
+    background
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x3f2d0b, alpha: 0.98 })
+      .stroke({ color: 0xf8fafc, width: 2 });
+    drawClipEdgeHandles(background, width, height, 0xfde68a);
+    sprite.x = 3;
+    sprite.y = 3;
+    sprite.width = Math.max(1, Math.min(width - 6, height - 6));
+    sprite.height = Math.max(1, height - 6);
+    container.addChild(
+      background,
+      sprite,
+      createClipEdgeHandle("trim-start", "image", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "image", clip, width, height, container)
+    );
+  }
+
+  function getTimelineClipY(type, trackIndex = 0) {
+    if (type === "video") {
+      return getVideoTrackY();
+    }
+
+    return type === "audio" ? getAudioTrackY(trackIndex) : getImageTrackY(trackIndex);
+  }
+
+  function getTimelineClipHeight(type) {
+    if (type === "video") {
+      return VIDEO_TRACK_HEIGHT;
+    }
+
+    return type === "audio" ? AUDIO_TRACK_HEIGHT : IMAGE_TRACK_HEIGHT;
   }
 
   function getVideoTimelineDuration() {
@@ -2006,7 +2708,11 @@ export async function startPixiMedia() {
         ? mediaElement.duration
         : 0;
 
-    return Math.max(mediaDuration, 1, ...clipEnds);
+    return Math.max(mediaDuration, timelineEditableDuration, 1, ...clipEnds);
+  }
+
+  function updateTimelineEditableDuration() {
+    timelineEditableDuration = Math.max(timelineEditableDuration, getTimelineDuration());
   }
 
   function getInsertionTime() {
@@ -2174,7 +2880,13 @@ export async function startPixiMedia() {
     return `${minutes}:${secondText}`;
   }
 
-  function handleTimelineClipPointerDown(type, clip, event) {
+  function handleTimelineClipPointerDown(
+    type,
+    clip,
+    event,
+    targetContainer = null,
+    forcedMode = null
+  ) {
     suppressNextCanvasToggle = true;
 
     if (playbackPlaying) {
@@ -2183,17 +2895,34 @@ export async function startPixiMedia() {
       return;
     }
 
-    const local = editorTimelineContent.toLocal(event.global);
+    selectTimelineClip(type, clip);
+
+    const local = editorTimelineTracks.toLocal(event.global);
+    const clipLocalX = targetContainer
+      ? targetContainer.toLocal(event.global).x
+      : local.x - clip.startTime * TIMELINE_PIXELS_PER_SECOND;
+    const mode = forcedMode || getTimelineClipPointerMode(clip, clipLocalX);
+    const timelineDuration =
+      type === "video" && mode === "move"
+        ? Math.max(timelineEditableDuration, getTimelineDuration()) + 60
+        : Math.max(timelineEditableDuration, getTimelineDuration());
+    const moveBounds = null;
 
     timelineClipDrag = {
       clip,
+      moveBounds,
+      mode,
+      originalDuration: clip.duration,
+      originalSourceOffset: getClipSourceOffset(clip),
+      originalStartTime: clip.startTime,
       pointerOffsetSeconds: local.x / TIMELINE_PIXELS_PER_SECOND - clip.startTime,
+      targetContainer: targetContainer || clip.timelineContainer,
       targetStartTime: clip.startTime,
       targetTrackIndex: getClipTrackIndex(clip),
-      timelineDuration: getTimelineDuration(),
+      timelineDuration,
       type,
     };
-    statusText.textContent = "Dragging clip";
+    statusText.textContent = mode === "move" ? "Dragging clip" : "Trimming clip";
     event.stopPropagation();
   }
 
@@ -2202,7 +2931,30 @@ export async function startPixiMedia() {
       return;
     }
 
-    updateTimelineClipDrag(event);
+    pendingTimelineClipDragEvent = {
+      global: {
+        x: event.global.x,
+        y: event.global.y,
+      },
+    };
+
+    if (timelineClipDragFrame) {
+      return;
+    }
+
+    timelineClipDragFrame = window.requestAnimationFrame(() => {
+      timelineClipDragFrame = 0;
+
+      if (!timelineClipDrag || !pendingTimelineClipDragEvent) {
+        pendingTimelineClipDragEvent = null;
+        return;
+      }
+
+      const pendingEvent = pendingTimelineClipDragEvent;
+
+      pendingTimelineClipDragEvent = null;
+      updateTimelineClipDrag(pendingEvent);
+    });
   }
 
   function handleTimelineClipPointerUp(event) {
@@ -2210,18 +2962,38 @@ export async function startPixiMedia() {
       return;
     }
 
+    cancelPendingTimelineClipDragFrame();
     updateTimelineClipDrag(event);
 
-    const { clip, targetStartTime, targetTrackIndex, type } = timelineClipDrag;
+    const { clip, mode, targetStartTime, targetTrackIndex, type } = timelineClipDrag;
     const clips = getTimelineClipsByType(type);
-    const finalTrackIndex = hasTimelineClipOverlap(type, clip, targetTrackIndex, targetStartTime)
-      ? getNextTrackIndex(clips, clip)
-      : targetTrackIndex;
+    const finalTrackIndex =
+      mode === "move" &&
+      type !== "video" &&
+      hasTimelineClipOverlap(type, clip, targetTrackIndex, targetStartTime)
+        ? getNextTrackIndex(clips, clip)
+        : targetTrackIndex;
 
-    clip.startTime = targetStartTime;
-    clip.trackIndex = finalTrackIndex;
+    if (mode === "move") {
+      clip.startTime = targetStartTime;
+      clip.trackIndex = finalTrackIndex;
+
+      if (type === "video") {
+        normalizeVideoTimelineClips();
+      }
+    }
+
+    updateTimelineEditableDuration();
     timelineClipDrag = null;
     renderTimelineClipTracks();
+    syncTimelineAudio();
+    if (type === "video") {
+      if (mode !== "move") {
+        startVideoTrackBuild();
+      }
+
+      updateVideoTexture(true);
+    }
     clearEditorTimelineRuler();
     drawTimeline();
     drawEditorTimeline();
@@ -2236,29 +3008,64 @@ export async function startPixiMedia() {
       return;
     }
 
-    const target = getTimelineClipDragTarget(event);
-    const { clip, type } = timelineClipDrag;
+    const { clip, mode, type } = timelineClipDrag;
+    const target =
+      mode === "move" ? getTimelineClipDragTarget(event) : getTimelineClipTrimTarget(event);
 
-    clip.startTime = target.startTime;
-    clip.trackIndex = target.trackIndex;
-    timelineClipDrag.targetStartTime = target.startTime;
-    timelineClipDrag.targetTrackIndex = target.trackIndex;
-    renderTimelineClipTracks();
-    clearEditorTimelineRuler();
-    drawTimeline();
-    drawEditorTimeline();
-    statusText.textContent = hasTimelineClipOverlap(type, clip, target.trackIndex, target.startTime)
-      ? "Release to move into a new track"
-      : "Dragging clip";
-    app.render();
+    if (mode === "move") {
+      clip.startTime = target.startTime;
+      clip.trackIndex = target.trackIndex;
+      timelineClipDrag.targetStartTime = target.startTime;
+      timelineClipDrag.targetTrackIndex = target.trackIndex;
+    } else {
+      clip.startTime = target.startTime;
+      clip.duration = target.duration;
+      clip.sourceOffset = target.sourceOffset;
+      timelineClipDrag.targetStartTime = target.startTime;
+      timelineClipDrag.targetTrackIndex = getClipTrackIndex(clip);
+    }
+
+    updateTimelineClipDragPreview();
+    statusText.textContent =
+      mode === "move" && hasTimelineClipOverlap(type, clip, target.trackIndex, target.startTime)
+        ? "Release to move into a new track"
+        : mode === "move"
+          ? "Dragging clip"
+          : "Trimming clip";
+  }
+
+  function cancelPendingTimelineClipDragFrame() {
+    if (timelineClipDragFrame) {
+      window.cancelAnimationFrame(timelineClipDragFrame);
+      timelineClipDragFrame = 0;
+    }
+
+    pendingTimelineClipDragEvent = null;
+  }
+
+  function normalizeVideoTimelineClips() {
+    const orderedClips = [...videoTimelineClips].sort((left, right) => {
+      if (Math.abs(left.startTime - right.startTime) > TRACK_OVERLAP_EPSILON) {
+        return left.startTime - right.startTime;
+      }
+
+      return videoTimelineClips.indexOf(left) - videoTimelineClips.indexOf(right);
+    });
+    let cursor = 0;
+
+    for (const clip of orderedClips) {
+      clip.startTime = Math.max(clip.startTime, cursor);
+      cursor = clip.startTime + clip.duration;
+    }
   }
 
   function getTimelineClipDragTarget(event) {
-    const { clip, pointerOffsetSeconds, timelineDuration, type } = timelineClipDrag;
-    const local = editorTimelineContent.toLocal(event.global);
-    const maxStartTime = Math.max(0, timelineDuration - clip.duration);
+    const { clip, moveBounds, pointerOffsetSeconds, timelineDuration, type } = timelineClipDrag;
+    const local = editorTimelineTracks.toLocal(event.global);
+    const minStartTime = moveBounds?.minStartTime ?? 0;
+    const maxStartTime = moveBounds?.maxStartTime ?? Math.max(0, timelineDuration - clip.duration);
     const startTime = Math.min(
-      Math.max(local.x / TIMELINE_PIXELS_PER_SECOND - pointerOffsetSeconds, 0),
+      Math.max(local.x / TIMELINE_PIXELS_PER_SECOND - pointerOffsetSeconds, minStartTime),
       maxStartTime
     );
 
@@ -2268,7 +3075,90 @@ export async function startPixiMedia() {
     };
   }
 
+  function getTimelineClipPointerMode(clip, localX) {
+    const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+
+    if (localX <= CLIP_EDGE_HIT_WIDTH) {
+      return "trim-start";
+    }
+
+    if (localX >= width - CLIP_EDGE_HIT_WIDTH) {
+      return "trim-end";
+    }
+
+    return "move";
+  }
+
+  function getTimelineClipTrimTarget(event) {
+    const { clip, mode, originalDuration, originalSourceOffset, originalStartTime, type } =
+      timelineClipDrag;
+    const local = editorTimelineTracks.toLocal(event.global);
+    const pointerTime = Math.max(0, local.x / TIMELINE_PIXELS_PER_SECOND);
+    const originalEndTime = originalStartTime + originalDuration;
+    const neighborBounds = getTimelineClipNeighborBounds(type, clip, getClipTrackIndex(clip));
+
+    if (mode === "trim-start") {
+      const minStartTime =
+        type === "image" ? 0 : Math.max(0, originalStartTime - originalSourceOffset);
+      const maxStartTime = originalEndTime - CLIP_MIN_DURATION;
+      const startTime = Math.min(
+        Math.max(pointerTime, minStartTime, neighborBounds.previousEnd),
+        maxStartTime
+      );
+      const duration = Math.max(CLIP_MIN_DURATION, originalEndTime - startTime);
+      const sourceOffset =
+        type === "image"
+          ? undefined
+          : Math.max(0, originalSourceOffset + startTime - originalStartTime);
+
+      return { duration, sourceOffset, startTime };
+    }
+
+    const sourceDuration = getClipSourceDuration(clip);
+    const maxEndTime =
+      type === "image"
+        ? Math.max(pointerTime, originalStartTime + CLIP_MIN_DURATION)
+        : originalStartTime + Math.max(CLIP_MIN_DURATION, sourceDuration - originalSourceOffset);
+    const minEndTime = originalStartTime + CLIP_MIN_DURATION;
+    const endTime = Math.min(
+      Math.max(pointerTime, minEndTime),
+      maxEndTime,
+      neighborBounds.nextStart
+    );
+
+    return {
+      duration: Math.max(CLIP_MIN_DURATION, endTime - originalStartTime),
+      sourceOffset: type === "image" ? undefined : originalSourceOffset,
+      startTime: originalStartTime,
+    };
+  }
+
+  function getTimelineClipNeighborBounds(type, targetClip, trackIndex) {
+    const clips = getTimelineClipsByType(type)
+      .filter((clip) => clip !== targetClip && getClipTrackIndex(clip) === trackIndex)
+      .sort((left, right) => left.startTime - right.startTime);
+    let previousEnd = 0;
+    let nextStart = Number.POSITIVE_INFINITY;
+
+    for (const clip of clips) {
+      const clipStart = clip.startTime;
+      const clipEnd = clip.startTime + clip.duration;
+
+      if (clipEnd <= targetClip.startTime + TRACK_OVERLAP_EPSILON) {
+        previousEnd = Math.max(previousEnd, clipEnd);
+      } else if (clipStart >= targetClip.startTime + TRACK_OVERLAP_EPSILON) {
+        nextStart = Math.min(nextStart, clipStart);
+      }
+    }
+
+    return { nextStart, previousEnd };
+  }
+
   function getTimelineTrackIndexFromY(type, y) {
+    if (type === "video") {
+      return 0;
+    }
+
     const count = type === "audio" ? getAudioTrackCount() : getImageTrackCount();
     const firstY = type === "audio" ? getAudioTrackY(0) : getImageTrackY(0);
     const rawIndex = Math.round((y - firstY) / getTrackPitch());
@@ -2277,7 +3167,43 @@ export async function startPixiMedia() {
   }
 
   function getTimelineClipsByType(type) {
+    if (type === "video") {
+      return videoTimelineClips;
+    }
+
     return type === "audio" ? audioTimelineClips : imageTimelineClips;
+  }
+
+  function getSelectedTimelineClip() {
+    if (
+      selectedTimelineClip &&
+      getTimelineClipsByType(selectedTimelineClip.type).includes(selectedTimelineClip.clip)
+    ) {
+      return selectedTimelineClip;
+    }
+
+    selectedTimelineClip = null;
+
+    return null;
+  }
+
+  function isSelectedTimelineClip(type, clip) {
+    const selected = getSelectedTimelineClip();
+
+    return Boolean(selected && selected.type === type && selected.clip === clip);
+  }
+
+  function selectTimelineClip(type, clip) {
+    if (!clip || !getTimelineClipsByType(type).includes(clip)) {
+      selectedTimelineClip = null;
+      return;
+    }
+
+    selectedTimelineClip = { clip, type };
+
+    if (type === "image") {
+      selectedImageClip = clip;
+    }
   }
 
   function hasTimelineClipOverlap(type, movingClip, trackIndex, startTime) {
@@ -2379,6 +3305,25 @@ export async function startPixiMedia() {
     }
   }
 
+  function handleTimelineWheel(event) {
+    if (currentKind !== "video" || !isSeekableMedia()) {
+      return;
+    }
+
+    const maxScroll = getMaxTimelineVerticalScroll();
+
+    if (maxScroll <= 0) {
+      return;
+    }
+
+    event.preventDefault();
+    timelineVerticalScroll = Math.min(
+      Math.max(timelineVerticalScroll + event.deltaY / Math.max(timelineScale, 0.001), 0),
+      maxScroll
+    );
+    drawEditorTimeline();
+  }
+
   function handlePlayPauseButtonPointerDown(event) {
     suppressNextCanvasToggle = true;
     event.stopPropagation();
@@ -2389,10 +3334,10 @@ export async function startPixiMedia() {
     canvas.title = currentKind === "video" && playbackPlaying ? "暂停" : "播放";
   }
 
-  function handleSplitButtonPointerDown(event) {
+  async function handleSplitButtonPointerDown(event) {
     suppressNextCanvasToggle = true;
     event.stopPropagation();
-    statusText.textContent = "Split";
+    await splitSelectedTimelineClip();
   }
 
   function handleSplitButtonPointerOver() {
@@ -2402,7 +3347,7 @@ export async function startPixiMedia() {
   function handleDeleteButtonPointerDown(event) {
     suppressNextCanvasToggle = true;
     event.stopPropagation();
-    statusText.textContent = "Delete";
+    deleteSelectedTimelineClip();
   }
 
   function handleDeleteButtonPointerOver() {
@@ -2411,6 +3356,194 @@ export async function startPixiMedia() {
 
   function handlePreviewButtonPointerOut() {
     canvas.removeAttribute("title");
+  }
+
+  function getEditableSelectedTimelineClip(actionLabel) {
+    if (currentKind !== "video") {
+      statusText.textContent = "Choose a video first";
+      return null;
+    }
+
+    if (playbackPlaying || playbackStartPending) {
+      statusText.textContent = `Pause before ${actionLabel}`;
+      return null;
+    }
+
+    const selected = getSelectedTimelineClip();
+
+    if (!selected) {
+      statusText.textContent = "Select a clip first";
+      return null;
+    }
+
+    return selected;
+  }
+
+  function deleteSelectedTimelineClip() {
+    const selected = getEditableSelectedTimelineClip("deleting clips");
+
+    if (!selected) {
+      return;
+    }
+
+    removeTimelineClip(selected.type, selected.clip);
+    selectedTimelineClip = null;
+    if (selected.type === "image" && selectedImageClip === selected.clip) {
+      selectedImageClip = null;
+    }
+
+    refreshTimelineAfterClipEdit(selected.type, { rebuildVideo: selected.type === "video" });
+    exportButton.disabled =
+      currentKind !== "video" || !currentVideoFile || videoTimelineClips.length === 0;
+    statusText.textContent = "Clip deleted";
+  }
+
+  async function splitSelectedTimelineClip() {
+    const selected = getEditableSelectedTimelineClip("splitting clips");
+
+    if (!selected) {
+      return;
+    }
+
+    const { clip, type } = selected;
+    const splitTime = playbackTime;
+    const clipStart = clip.startTime;
+    const clipEnd = clip.startTime + clip.duration;
+
+    if (
+      splitTime <= clipStart + TRACK_OVERLAP_EPSILON ||
+      splitTime >= clipEnd - TRACK_OVERLAP_EPSILON
+    ) {
+      statusText.textContent = "Move playhead inside the selected clip";
+      return;
+    }
+
+    statusText.textContent = "Splitting clip";
+
+    try {
+      const rightClip = await createSplitRightClip(type, clip, splitTime);
+      const clips = getTimelineClipsByType(type);
+      const index = clips.indexOf(clip);
+
+      clip.duration = splitTime - clipStart;
+      clips.splice(index + 1, 0, rightClip);
+      selectTimelineClip(type, rightClip);
+      refreshTimelineAfterClipEdit(type, { rebuildVideo: type === "video" });
+      statusText.textContent = "Clip split";
+    } catch (error) {
+      statusText.textContent = error instanceof Error ? error.message : "Failed to split clip";
+    }
+  }
+
+  async function createSplitRightClip(type, clip, splitTime) {
+    const leftDuration = splitTime - clip.startTime;
+    const rightDuration = clip.startTime + clip.duration - splitTime;
+    const sourceOffset = getClipSourceOffset(clip);
+    const baseClip = {
+      ...clip,
+      duration: rightDuration,
+      sourceOffset: type === "image" ? undefined : sourceOffset + leftDuration,
+      startTime: splitTime,
+      trackIndex: getClipTrackIndex(clip),
+    };
+
+    if (type === "video") {
+      return {
+        ...baseClip,
+        audioElement: await createTimelineMediaElement("video", clip.file),
+        provider: clip.provider,
+      };
+    }
+
+    if (type === "audio") {
+      return {
+        ...baseClip,
+        audioElement: await createTimelineMediaElement("audio", clip.file),
+        samples: clip.samples,
+      };
+    }
+
+    return {
+      ...baseClip,
+      imageFrame: clip.imageFrame ? { ...clip.imageFrame } : undefined,
+    };
+  }
+
+  async function createTimelineMediaElement(type, file) {
+    const url = URL.createObjectURL(file);
+    const element = type === "video" ? document.createElement("video") : new Audio();
+
+    timelineObjectUrls.push(url);
+    element.loop = false;
+    element.preload = "auto";
+    element.src = url;
+
+    if (element instanceof HTMLVideoElement) {
+      element.playsInline = true;
+    }
+
+    await waitForMediaReady(element, "loadedmetadata", type);
+    element.pause();
+
+    return element;
+  }
+
+  function removeTimelineClip(type, clip) {
+    const clips = getTimelineClipsByType(type);
+    const index = clips.indexOf(clip);
+
+    if (index === -1) {
+      return;
+    }
+
+    clips.splice(index, 1);
+    disposeTimelineClipResources(type, clip);
+  }
+
+  function disposeTimelineClipResources(type, clip) {
+    if ((type === "video" || type === "audio") && clip.audioElement) {
+      clip.audioElement.pause();
+
+      if (!isTimelineResourceShared("audioElement", clip.audioElement)) {
+        if (clip.audioElement !== mediaElement) {
+          clip.audioElement.removeAttribute("src");
+          clip.audioElement.load();
+        }
+      }
+    }
+
+    if (
+      type === "video" &&
+      clip.provider &&
+      clip.provider !== videoFrameProvider &&
+      !isTimelineResourceShared("provider", clip.provider)
+    ) {
+      clip.provider.dispose();
+    }
+  }
+
+  function isTimelineResourceShared(key, value) {
+    return [...videoTimelineClips, ...audioTimelineClips, ...imageTimelineClips].some(
+      (clip) => clip[key] === value
+    );
+  }
+
+  function refreshTimelineAfterClipEdit(type, { rebuildVideo = false } = {}) {
+    pauseTimelineAudio();
+    syncTimelineAudio();
+
+    if (type === "video" && rebuildVideo) {
+      startVideoTrackBuild();
+    } else {
+      renderTimelineClipTracks();
+    }
+
+    clearEditorTimelineRuler();
+    updateVideoTexture(true);
+    updateImageOverlayPosition();
+    drawTimeline();
+    drawEditorTimeline();
+    app.render();
   }
 
   function handleMediaSeeked() {
@@ -2481,34 +3614,39 @@ export async function startPixiMedia() {
   }
 
   function getImageExportFrame(rect, clip) {
-    if (imagePositionInitialized) {
+    if (clip.imageFrame) {
+      return clip.imageFrame;
+    }
+
+    if (clip === getActiveImageTimelineClip() && imagePositionInitialized) {
       return imageFrame;
     }
 
-    const width = clip.texture.width || clip.imageElement.naturalWidth || 1;
-    const height = clip.texture.height || clip.imageElement.naturalHeight || 1;
-    const aspectRatio = width / height;
-    const frameWidth = Math.min(rect.width * 0.5, rect.height * aspectRatio);
-    const frameHeight = frameWidth / aspectRatio;
+    return getImageClipFrame(clip, rect);
+  }
 
-    return {
-      height: frameHeight,
-      width: frameWidth,
-      x: rect.left + (rect.width - frameWidth) / 2,
-      y: rect.top + (rect.height - frameHeight) / 2,
-    };
+  function getActiveImageTimelineClips() {
+    if (currentKind !== "video") {
+      return [];
+    }
+
+    return imageTimelineClips.filter(
+      (clip) => playbackTime >= clip.startTime && playbackTime < clip.startTime + clip.duration
+    );
+  }
+
+  function getSelectedImageClip(activeClips = getActiveImageTimelineClips()) {
+    if (selectedImageClip && activeClips.includes(selectedImageClip)) {
+      return selectedImageClip;
+    }
+
+    selectedImageClip = activeClips[0] || null;
+
+    return selectedImageClip;
   }
 
   function getActiveImageTimelineClip() {
-    if (currentKind !== "video") {
-      return null;
-    }
-
-    return (
-      imageTimelineClips.find(
-        (clip) => playbackTime >= clip.startTime && playbackTime < clip.startTime + clip.duration
-      ) || null
-    );
+    return getSelectedImageClip();
   }
 
   function downloadBlob(blob, fileNameValue) {
@@ -2528,12 +3666,14 @@ export async function startPixiMedia() {
       ...videoTimelineClips.map((clip) => ({
         duration: clip.duration,
         file: clip.file,
+        sourceOffset: getClipSourceOffset(clip),
         startTime: clip.startTime,
         volume: clip.volume ?? 1,
       })),
       ...audioTimelineClips.map((clip) => ({
         duration: clip.duration,
         file: clip.file,
+        sourceOffset: getClipSourceOffset(clip),
         startTime: clip.startTime,
         volume: clip.volume ?? 1,
       })),
@@ -2561,8 +3701,12 @@ export async function startPixiMedia() {
         gain.connect(offlineContext.destination);
         node.start(
           Math.max(0, source.startTime),
-          0,
-          Math.min(buffer.duration, source.duration, Math.max(0, duration - source.startTime))
+          Math.max(0, source.sourceOffset || 0),
+          Math.min(
+            Math.max(0, buffer.duration - Math.max(0, source.sourceOffset || 0)),
+            source.duration,
+            Math.max(0, duration - source.startTime)
+          )
         );
         decodedCount += 1;
       } catch {
@@ -2584,8 +3728,21 @@ export async function startPixiMedia() {
 
     const textOverlayState = getTextOverlayExportState();
     const imageOverlayStates = getImageOverlayExportStates();
+    const hasVideoTimelineEdit =
+      videoTimelineClips.length !== 1 ||
+      videoTimelineClips.some(
+        (clip) =>
+          getClipSourceOffset(clip) > 0.001 ||
+          Math.abs(clip.duration - getClipSourceDuration(clip)) > 0.001 ||
+          clip.startTime > 0.001
+      );
 
-    if (!textOverlayState && imageOverlayStates.length === 0 && audioTimelineClips.length === 0) {
+    if (
+      !hasVideoTimelineEdit &&
+      !textOverlayState &&
+      imageOverlayStates.length === 0 &&
+      audioTimelineClips.length === 0
+    ) {
       statusText.textContent = "No overlay";
       return;
     }
@@ -2593,6 +3750,8 @@ export async function startPixiMedia() {
     isExporting = true;
     exportButton.disabled = true;
     chooseButton.disabled = true;
+    exportProgressLabel.hidden = false;
+    exportProgressLabel.textContent = "0%";
     statusText.textContent = "Exporting 0%";
 
     const shouldResume = currentKind === "video" && playbackPlaying;
@@ -2606,13 +3765,16 @@ export async function startPixiMedia() {
       const duration = getTimelineDuration();
 
       statusText.textContent = "Mixing audio";
+      exportProgressLabel.textContent = "0%";
       const audioBuffer = await createTimelineAudioMixdown(duration);
 
       statusText.textContent = "Exporting 0%";
+      exportProgressLabel.textContent = "0%";
       const blob = await exportTimelineComposition(
         videoTimelineClips.map((clip) => ({
           duration: clip.duration,
           file: clip.file,
+          sourceOffset: getClipSourceOffset(clip),
           startTime: clip.startTime,
         })),
         {
@@ -2623,7 +3785,10 @@ export async function startPixiMedia() {
           audioBuffer,
           duration,
           onProgress(progress) {
-            statusText.textContent = `Exporting ${Math.round(progress * 100)}%`;
+            const percentText = `${Math.round(progress * 100)}%`;
+
+            exportProgressLabel.textContent = percentText;
+            statusText.textContent = `Exporting ${percentText}`;
           },
         }
       );
@@ -2636,7 +3801,9 @@ export async function startPixiMedia() {
     } finally {
       isExporting = false;
       chooseButton.disabled = false;
-      exportButton.disabled = currentKind !== "video" || !currentVideoFile;
+      exportButton.disabled =
+        currentKind !== "video" || !currentVideoFile || videoTimelineClips.length === 0;
+      exportProgressLabel.hidden = true;
 
       if (shouldResume) {
         await startTimelinePlayback();
@@ -2688,6 +3855,7 @@ export async function startPixiMedia() {
       return;
     }
 
+    selectImageOverlayClip(getActiveImageTimelineClip());
     suppressNextCanvasToggle = true;
     imageDragging = true;
     overlayImageGroup.cursor = "grabbing";
@@ -2697,6 +3865,16 @@ export async function startPixiMedia() {
     imageDragOffset.x = local.x - imageFrame.x;
     imageDragOffset.y = local.y - imageFrame.y;
     event.stopPropagation();
+  }
+
+  function handleExtraImagePointerDown(clip, event) {
+    if (currentKind !== "video") {
+      return;
+    }
+
+    selectImageOverlayClip(clip);
+    updateImageOverlayPosition();
+    handleImagePointerDown(event);
   }
 
   function handleImageResizePointerDown(corner, event) {
@@ -2731,6 +3909,7 @@ export async function startPixiMedia() {
     }
 
     clampImageToMediaRect();
+    saveActiveImageFrame();
     layoutImageOverlay();
     app.render();
   }
@@ -2760,6 +3939,7 @@ export async function startPixiMedia() {
     imageFrame.height = height;
     imageFrame.x = corner.includes("l") ? oppositeX - width : oppositeX;
     imageFrame.y = corner.includes("t") ? oppositeY - height : oppositeY;
+    saveActiveImageFrame();
   }
 
   function handleImagePointerUp() {
@@ -2829,19 +4009,30 @@ export async function startPixiMedia() {
   }
 
   function isPointerInImageOverlay(event) {
-    if (!event || currentKind !== "video" || !overlayImageGroup.visible) {
+    if (!event || currentKind !== "video") {
+      return false;
+    }
+
+    const rect = getMediaSpriteRect();
+
+    if (!rect) {
       return false;
     }
 
     const canvasPoint = getCanvasPoint(event);
     const padding = IMAGE_OVERLAY_HANDLE_RADIUS + 4;
 
-    return (
-      canvasPoint.x >= imageFrame.x - padding &&
-      canvasPoint.x <= imageFrame.x + imageFrame.width + padding &&
-      canvasPoint.y >= imageFrame.y - padding &&
-      canvasPoint.y <= imageFrame.y + imageFrame.height + padding
-    );
+    return getActiveImageTimelineClips().some((clip) => {
+      const frame =
+        clip === getActiveImageTimelineClip() ? imageFrame : getImageClipFrame(clip, rect);
+
+      return (
+        canvasPoint.x >= frame.x - padding &&
+        canvasPoint.x <= frame.x + frame.width + padding &&
+        canvasPoint.y >= frame.y - padding &&
+        canvasPoint.y <= frame.y + frame.height + padding
+      );
+    });
   }
 
   function getCanvasPoint(event) {
@@ -2908,7 +4099,7 @@ export async function startPixiMedia() {
   subtitleColorInput.addEventListener("input", handleSubtitleControlChange);
   exportButton.addEventListener("click", handleExportClick);
   input.addEventListener("change", handleInputChange);
-  canvas.addEventListener("pointerdown", togglePlayback);
+  timelineCanvas.addEventListener("wheel", handleTimelineWheel, { passive: false });
   window.addEventListener("resize", resizeCanvas);
   timeline.on("pointerdown", handleTimelinePointerDown);
   timeline.on("pointerup", handleTimelinePointerUp);
@@ -2926,6 +4117,9 @@ export async function startPixiMedia() {
   editorTimeline.on("pointerup", handleTimelineClipPointerUp);
   editorTimeline.on("pointerupoutside", handleTimelineClipPointerUp);
   editorTimeline.on("globalpointermove", handleTimelineClipPointerMove);
+  overlayImageLayer.on("pointerup", handleImagePointerUp);
+  overlayImageLayer.on("pointerupoutside", handleImagePointerUp);
+  overlayImageLayer.on("globalpointermove", handleImagePointerMove);
   overlayImageGroup.on("pointerdown", handleImagePointerDown);
   overlayImageGroup.on("pointerup", handleImagePointerUp);
   overlayImageGroup.on("pointerupoutside", handleImagePointerUp);
@@ -2961,7 +4155,7 @@ export async function startPixiMedia() {
     toolbarLeft.remove();
     toolbarRight.remove();
     input.removeEventListener("change", handleInputChange);
-    canvas.removeEventListener("pointerdown", togglePlayback);
+    timelineCanvas.removeEventListener("wheel", handleTimelineWheel);
     window.removeEventListener("resize", resizeCanvas);
     input.remove();
     timeline.off("pointerdown", handleTimelinePointerDown);
@@ -2980,6 +4174,9 @@ export async function startPixiMedia() {
     editorTimeline.off("pointerup", handleTimelineClipPointerUp);
     editorTimeline.off("pointerupoutside", handleTimelineClipPointerUp);
     editorTimeline.off("globalpointermove", handleTimelineClipPointerMove);
+    overlayImageLayer.off("pointerup", handleImagePointerUp);
+    overlayImageLayer.off("pointerupoutside", handleImagePointerUp);
+    overlayImageLayer.off("globalpointermove", handleImagePointerMove);
     overlayImageGroup.off("pointerdown", handleImagePointerDown);
     overlayImageGroup.off("pointerup", handleImagePointerUp);
     overlayImageGroup.off("pointerupoutside", handleImagePointerUp);

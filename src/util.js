@@ -106,6 +106,8 @@ export async function extractVideoFramesWithMediabunny(source, options = {}) {
     includeLastFrame = false,
     fit = "contain",
     poolSize = 3,
+    startTime = 0,
+    duration,
   } = options;
 
   if (intervalSeconds <= 0) {
@@ -120,7 +122,16 @@ export async function extractVideoFramesWithMediabunny(source, options = {}) {
   });
 
   try {
-    const times = createFrameTimes(provider.duration, intervalSeconds, maxFrames, includeLastFrame);
+    const safeStartTime = Math.min(
+      Math.max(Number.isFinite(startTime) ? startTime : 0, 0),
+      Math.max(0, provider.duration - 0.001)
+    );
+    const safeDuration = Number.isFinite(duration)
+      ? Math.max(0, Math.min(duration, provider.duration - safeStartTime))
+      : Math.max(0, provider.duration - safeStartTime);
+    const times = createFrameTimes(safeDuration, intervalSeconds, maxFrames, includeLastFrame).map(
+      (time) => safeStartTime + time
+    );
     const frames = [];
 
     for (const time of times) {
@@ -340,7 +351,13 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
       outputContext.fillRect(0, 0, width, height);
 
       if (activeClip) {
-        const frame = await activeClip.provider.drawFrameAt(timestamp - activeClip.startTime);
+        const sourceOffset = Math.max(
+          0,
+          Number.isFinite(activeClip.sourceOffset) ? activeClip.sourceOffset : 0
+        );
+        const frame = await activeClip.provider.drawFrameAt(
+          sourceOffset + timestamp - activeClip.startTime
+        );
 
         if (frame) {
           drawContainedFrame(outputContext, frame.canvas, width, height);
