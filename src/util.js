@@ -235,6 +235,7 @@ export async function exportVideoWithTextOverlay(source, overlay = {}, options =
       outputContext.clearRect(0, 0, width, height);
       outputContext.drawImage(frame.canvas, 0, 0, width, height);
       drawImageOverlay(outputContext, width, height, frame.timestamp, overlay.image);
+      drawTextOverlays(outputContext, width, height, frame.timestamp, overlay.texts);
       drawTextOverlay(outputContext, width, height, frame.timestamp, overlay);
       await videoSource.add(Math.max(0, frame.timestamp), frame.duration);
 
@@ -366,6 +367,7 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
 
       drawImageOverlays(outputContext, width, height, timestamp, overlay.images);
       drawImageOverlay(outputContext, width, height, timestamp, overlay.image);
+      drawTextOverlays(outputContext, width, height, timestamp, overlay.texts);
       drawTextOverlay(outputContext, width, height, timestamp, overlay);
       await videoSource.add(timestamp, Math.min(frameDuration, safeDuration - timestamp));
 
@@ -529,6 +531,7 @@ function drawTextOverlay(context, width, height, time, overlay) {
     fontSizeRatio = 0.085,
     fontWeight = "800",
     intervals,
+    maxWidthRatio = 1,
     startTime = 0,
     strokeStyle = "rgba(0, 0, 0, 0.82)",
     text = "",
@@ -550,11 +553,10 @@ function drawTextOverlay(context, width, height, time, overlay) {
   const fontSize = Math.max(10, Math.round(height * fontSizeRatio));
   const x = Math.min(Math.max(xRatio, 0), 1) * width;
   const y = Math.min(Math.max(yRatio, 0), 1) * height;
+  const maxTextWidth = Math.max(1, width * Math.min(Math.max(maxWidthRatio, 0), 1));
 
   context.save();
   context.globalAlpha = transition.alpha;
-  context.translate(x, y);
-  context.scale(transition.yScale, 1);
   context.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -562,9 +564,79 @@ function drawTextOverlay(context, width, height, time, overlay) {
   context.lineWidth = Math.max(3, Math.round(fontSize * 0.16));
   context.strokeStyle = strokeStyle;
   context.fillStyle = fillStyle;
-  context.strokeText(text, 0, 0);
-  context.fillText(text, 0, 0);
+  const lines = wrapCanvasTextLines(context, text, maxTextWidth);
+  const lineHeight = Math.max(1, Math.round(fontSize * 1.25));
+  const firstLineY = -((lines.length - 1) * lineHeight) / 2;
+
+  context.translate(x, y);
+  context.scale(transition.axisScale, 1);
+  lines.forEach((line, index) => {
+    const lineY = firstLineY + index * lineHeight;
+
+    context.strokeText(line, 0, lineY);
+    context.fillText(line, 0, lineY);
+  });
   context.restore();
+}
+
+function wrapCanvasTextLines(context, text, maxWidth) {
+  const normalizedText = String(text).replace(/\r\n?/g, "\n");
+  const paragraphs = normalizedText.split("\n");
+  const lines = [];
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/(\s+)/).filter(Boolean);
+    let line = "";
+
+    for (const word of words) {
+      const candidate = line ? `${line}${word}` : word.trimStart();
+
+      if (!candidate) {
+        continue;
+      }
+
+      if (context.measureText(candidate).width <= maxWidth) {
+        line = candidate;
+        continue;
+      }
+
+      if (line) {
+        lines.push(line.trimEnd());
+        line = "";
+      }
+
+      if (context.measureText(word).width <= maxWidth) {
+        line = word.trimStart();
+      } else {
+        line = pushWrappedWord(context, word.trim(), maxWidth, lines);
+      }
+    }
+
+    if (line) {
+      lines.push(line.trimEnd());
+    } else if (paragraph === "") {
+      lines.push("");
+    }
+  }
+
+  return lines.length > 0 ? lines : [""];
+}
+
+function pushWrappedWord(context, word, maxWidth, lines) {
+  let line = "";
+
+  for (const char of word) {
+    const candidate = `${line}${char}`;
+
+    if (context.measureText(candidate).width <= maxWidth || !line) {
+      line = candidate;
+    } else {
+      lines.push(line);
+      line = char;
+    }
+  }
+
+  return line;
 }
 
 function drawImageOverlay(context, width, height, time, overlay) {
@@ -596,7 +668,7 @@ function drawImageOverlay(context, width, height, time, overlay) {
   context.save();
   context.globalAlpha = transition.alpha;
   context.translate(x + targetWidth / 2, y + targetHeight / 2);
-  context.scale(transition.yScale, 1);
+  context.scale(transition.axisScale, 1);
   context.drawImage(imageSource, -targetWidth / 2, -targetHeight / 2, targetWidth, targetHeight);
   context.restore();
 }
@@ -608,6 +680,16 @@ function drawImageOverlays(context, width, height, time, overlays) {
 
   for (const overlay of overlays) {
     drawImageOverlay(context, width, height, time, overlay);
+  }
+}
+
+function drawTextOverlays(context, width, height, time, overlays) {
+  if (!Array.isArray(overlays)) {
+    return;
+  }
+
+  for (const overlay of overlays) {
+    drawTextOverlay(context, width, height, time, overlay);
   }
 }
 
@@ -644,7 +726,7 @@ function getOverlayTransitionAtTime(time, overlay) {
 
   return {
     alpha: progress,
-    yScale: Math.cos((1 - progress) * (Math.PI / 2)),
+    axisScale: Math.cos((1 - progress) * (Math.PI / 2)),
   };
 }
 

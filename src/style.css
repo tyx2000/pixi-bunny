@@ -114,10 +114,11 @@ body.pixi-media-page #game-shell {
 
 body.pixi-media-page #hud {
   order: -1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  position: relative;
+  display: flex;
   gap: 12px;
   align-items: center;
+  justify-content: flex-start;
   height: 60px;
   box-sizing: border-box;
   padding: 12px;
@@ -149,21 +150,33 @@ body.pixi-media-page #timeline-canvas {
 }
 
 .media-toolbar-left,
-.media-toolbar-right,
-.subtitle-controls {
+.media-toolbar-right {
   display: flex;
   gap: 8px;
   align-items: center;
   min-width: 0;
 }
 
-.subtitle-controls {
-  overflow: hidden;
+.media-toolbar-right {
+  margin-left: auto;
 }
 
-body.pixi-media-page #hud button,
-.subtitle-controls input,
-.subtitle-controls select {
+.media-performance-stats {
+  position: absolute;
+  left: 50%;
+  max-width: min(48vw, 520px);
+  overflow: hidden;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+body.pixi-media-page #hud button {
   height: 36px;
   box-sizing: border-box;
   border: 1px solid #404040;
@@ -173,24 +186,69 @@ body.pixi-media-page #hud button,
   font: inherit;
 }
 
-.subtitle-controls input[type="text"] {
-  width: 180px;
-  padding: 0 10px;
-}
-
-.subtitle-controls input[type="color"] {
-  width: 42px;
-  padding: 3px;
-}
-
-.subtitle-controls select {
-  padding: 0 8px;
-}
-
-body.pixi-media-page #hud button:hover:not(:disabled),
-.subtitle-controls input:hover,
-.subtitle-controls select:hover {
+body.pixi-media-page #hud button:hover:not(:disabled) {
   background: #2a2a2a;
+}
+
+.subtitle-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  gap: 8px;
+  min-width: 148px;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  color: #f5f5f5;
+  background: #18181b;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  font-size: 12px;
+}
+
+.subtitle-context-menu[hidden],
+.subtitle-edit-input[hidden] {
+  display: none;
+}
+
+.subtitle-context-menu label {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.subtitle-context-menu input,
+.subtitle-context-menu select,
+.subtitle-edit-input {
+  height: 30px;
+  box-sizing: border-box;
+  border: 1px solid #52525b;
+  border-radius: 5px;
+  color: #f5f5f5;
+  background: #27272a;
+  font: inherit;
+}
+
+.subtitle-context-menu input[type="color"] {
+  width: 100%;
+  padding: 2px;
+}
+
+.subtitle-context-menu input[type="number"],
+.subtitle-context-menu select {
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.subtitle-edit-input {
+  position: fixed;
+  z-index: 21;
+  height: 34px;
+  padding: 0 10px;
+  text-align: center;
+  background: rgb(24 24 27 / 0.92);
+  outline: 2px solid #38bdf8;
 }
 
 .export-progress {

@@ -43,9 +43,11 @@ const RULER_LABEL_HEIGHT = 16;
 const VIDEO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
 const AUDIO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
 const IMAGE_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
+const TEXT_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
 const VIDEO_THUMB_WIDTH = 92;
 const VIDEO_THUMB_HEIGHT = VIDEO_TRACK_HEIGHT - 8;
 const TIMELINE_PIXELS_PER_SECOND = 10;
+const TIMELINE_DRAG_EXTENSION_SECONDS = 60;
 const TRACK_OVERLAP_EPSILON = 0.02;
 const CLIP_MIN_DURATION = 1;
 const CLIP_EDGE_HIT_WIDTH = 8;
@@ -53,12 +55,17 @@ const IMAGE_CLIP_DEFAULT_DURATION = 5;
 const VIDEO_FRAME_MIN_INTERVAL = 1 / 30;
 const MEDIA_SYNC_SEEK_THRESHOLD = 0.28;
 const MEDIA_SYNC_SEEK_RETRY_THRESHOLD = 0.45;
-const TEXT_OVERLAY_INTERVALS = [
-  { duration: 4, startTime: 2 },
-  { duration: 7, startTime: 10 },
-];
-const TEXT_OVERLAY_VALUE = "Pixi text";
-const TEXT_OVERLAY_DEFAULT_DURATION = 5;
+const PERFORMANCE_UPDATE_INTERVAL_MS = 500;
+const PERFORMANCE_FRAME_BUDGET_MS = 1000 / 60;
+const TEXT_DOUBLE_TAP_MS = 360;
+const TEXT_CLIP_DEFAULT_DURATION = 2;
+const TEXT_CLIP_DEFAULT_VALUE = "Hello world";
+const TEXT_CLIP_DEFAULT_COLOR = "#ffffff";
+const TEXT_CLIP_DEFAULT_FONT_SIZE = 14;
+const TEXT_CLIP_DEFAULT_FONT_WEIGHT = "400";
+const TEXT_CLIP_BOTTOM_MARGIN = 12;
+const TIMELINE_TEXT_LABEL_FONT = "700 12px Inter, system-ui, sans-serif";
+const TIMELINE_TEXT_LABEL_PADDING = 20;
 const IMAGE_OVERLAY_MIN_WIDTH = 48;
 const IMAGE_OVERLAY_HANDLE_RADIUS = 8;
 const OVERLAY_FADE_SECONDS = 0.35;
@@ -122,44 +129,55 @@ export async function startPixiMedia() {
   subtitleButton.type = "button";
   subtitleButton.textContent = "字幕";
 
-  const subtitleTextInput = document.createElement("input");
-  subtitleTextInput.type = "text";
-  subtitleTextInput.value = TEXT_OVERLAY_VALUE;
-  subtitleTextInput.ariaLabel = "字幕文本";
+  const subtitleContextMenu = document.createElement("div");
+  subtitleContextMenu.className = "subtitle-context-menu";
+  subtitleContextMenu.hidden = true;
 
-  const subtitleSizeSelect = createSelect("字幕字号", ["28", "36", "42", "48", "56", "64"], "42");
-  const subtitleFontSelect = createSelect(
-    "字幕字体",
-    ["Inter", "Arial", "Georgia", "Times New Roman", "Courier New"],
-    "Inter"
-  );
-  const subtitleStyleSelect = createSelect(
-    "字幕风格",
-    ["Regular", "Bold", "Italic", "Bold Italic"],
-    "Bold"
-  );
   const subtitleColorInput = document.createElement("input");
   subtitleColorInput.type = "color";
-  subtitleColorInput.value = "#ffffff";
+  subtitleColorInput.value = TEXT_CLIP_DEFAULT_COLOR;
   subtitleColorInput.ariaLabel = "字幕颜色";
+
+  const subtitleSizeInput = document.createElement("input");
+  subtitleSizeInput.type = "number";
+  subtitleSizeInput.min = "8";
+  subtitleSizeInput.max = "96";
+  subtitleSizeInput.step = "1";
+  subtitleSizeInput.value = String(TEXT_CLIP_DEFAULT_FONT_SIZE);
+  subtitleSizeInput.ariaLabel = "字幕字号";
+
+  const subtitleWeightSelect = createSelect(
+    "字幕字重",
+    ["400", "500", "600", "700", "800"],
+    TEXT_CLIP_DEFAULT_FONT_WEIGHT
+  );
+
+  subtitleContextMenu.append(
+    createFieldLabel("颜色", subtitleColorInput),
+    createFieldLabel("字号", subtitleSizeInput),
+    createFieldLabel("字重", subtitleWeightSelect)
+  );
+  document.body.appendChild(subtitleContextMenu);
+
+  const subtitleEditInput = document.createElement("input");
+  subtitleEditInput.type = "text";
+  subtitleEditInput.className = "subtitle-edit-input";
+  subtitleEditInput.hidden = true;
+  subtitleEditInput.ariaLabel = "编辑字幕文本";
+  document.body.appendChild(subtitleEditInput);
 
   const toolbarLeft = document.createElement("div");
   toolbarLeft.className = "media-toolbar-left";
   const toolbarRight = document.createElement("div");
   toolbarRight.className = "media-toolbar-right";
-  const subtitleControls = document.createElement("div");
-  subtitleControls.className = "subtitle-controls";
+  const performanceStats = document.createElement("div");
+  performanceStats.className = "media-performance-stats";
+  performanceStats.textContent = "CPU N/A · GPU N/A · MEM N/A";
+  performanceStats.ariaLive = "polite";
 
-  subtitleControls.append(
-    subtitleTextInput,
-    subtitleSizeSelect,
-    subtitleFontSelect,
-    subtitleStyleSelect,
-    subtitleColorInput
-  );
-  toolbarLeft.append(chooseButton, subtitleButton, subtitleControls);
+  toolbarLeft.append(chooseButton, subtitleButton);
   toolbarRight.append(exportProgressLabel, exportButton);
-  hud.append(toolbarLeft, toolbarRight);
+  hud.append(toolbarLeft, performanceStats, toolbarRight);
 
   const input = document.createElement("input");
   input.type = "file";
@@ -204,6 +222,7 @@ export async function startPixiMedia() {
   const mediaLayer = new Container();
   const textLayer = new Container();
   const overlayImageLayer = new Container();
+  const textOverlayLayer = new Container();
   const overlayImageExtras = new Container();
   const overlayImageGroup = new Container();
   const overlayImageSprite = new Sprite({ texture: overlayImageTexture });
@@ -253,6 +272,7 @@ export async function startPixiMedia() {
   const editorTimelineVideoClips = new Container();
   const editorTimelineAudioClips = new Container();
   const editorTimelineImageClips = new Container();
+  const editorTimelineTextClips = new Container();
   const editorTimelineTrackLabels = new Container();
   const editorTimelinePlayhead = new Graphics();
   const editorTimelineMask = new Graphics();
@@ -286,6 +306,15 @@ export async function startPixiMedia() {
   });
   const editorTimelineImageLabel = new Text({
     text: "Image",
+    style: {
+      fill: "#cbd5e1",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: 13,
+      fontWeight: "700",
+    },
+  });
+  const editorTimelineTextLabel = new Text({
+    text: "Text",
     style: {
       fill: "#cbd5e1",
       fontFamily: "Inter, system-ui, sans-serif",
@@ -330,17 +359,6 @@ export async function startPixiMedia() {
       wordWrapWidth: VIEW_WIDTH - MEDIA_PADDING * 2,
     },
   });
-  const overlayText = new Text({
-    text: TEXT_OVERLAY_VALUE,
-    style: {
-      fill: "#ffffff",
-      fontFamily: "Inter, system-ui, sans-serif",
-      fontSize: 42,
-      fontWeight: "800",
-      stroke: { color: "rgba(0, 0, 0, 0.82)", width: 7 },
-    },
-  });
-
   app.stage.addChild(scene);
   timelineApp.stage.addChild(timelineScene);
   scene.addChild(mediaLayer, textLayer, overlay, visualizer, controlsLayer, titleText, detailText);
@@ -349,7 +367,7 @@ export async function startPixiMedia() {
     overlayImageSprite,
     ...overlayImageHandles.map((handle) => handle.node)
   );
-  textLayer.addChild(overlayImageLayer, overlayText);
+  textLayer.addChild(overlayImageLayer, textOverlayLayer);
   overlayImageLayer.addChild(overlayImageExtras, overlayImageGroup);
   controlsLayer.addChild(timeline);
   playPauseButton.addChild(playPauseButtonBackground, playPauseButtonIcon);
@@ -374,7 +392,8 @@ export async function startPixiMedia() {
     editorTimelineFrames,
     editorTimelineVideoClips,
     editorTimelineAudioClips,
-    editorTimelineImageClips
+    editorTimelineImageClips,
+    editorTimelineTextClips
   );
   editorTimeline.addChild(
     editorTimelineBackground,
@@ -386,6 +405,7 @@ export async function startPixiMedia() {
     editorTimelineLabel,
     editorTimelineAudioLabel,
     editorTimelineImageLabel,
+    editorTimelineTextLabel,
     editorTimelineStatus
   );
   editorTimelineContent.mask = editorTimelineMask;
@@ -435,15 +455,19 @@ export async function startPixiMedia() {
     EDITOR_PANEL_X + 14,
     getVideoTrackY() + getTrackPitch() * 2 + IMAGE_TRACK_HEIGHT / 2
   );
+  editorTimelineTextLabel.anchor.set(0, 0.5);
+  editorTimelineTextLabel.visible = false;
+  editorTimelineTextLabel.position.set(
+    EDITOR_PANEL_X + 14,
+    getVideoTrackY() + getTrackPitch() * 3 + TEXT_TRACK_HEIGHT / 2
+  );
   editorTimelineStatus.anchor.set(0.5, 0.5);
   editorTimelineStatus.position.set(getEditorPlayheadX(), EDITOR_PANEL_Y + 14);
 
   titleText.anchor.set(0.5);
   detailText.anchor.set(0.5);
-  overlayText.anchor.set(0.5);
-  overlayText.eventMode = "static";
-  overlayText.cursor = "grab";
-  overlayText.visible = false;
+  textOverlayLayer.eventMode = "static";
+  textOverlayLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
   overlayImageLayer.eventMode = "static";
   overlayImageLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
   overlayImageGroup.eventMode = "static";
@@ -477,6 +501,7 @@ export async function startPixiMedia() {
   let videoTimelineClips = [];
   let audioTimelineClips = [];
   let imageTimelineClips = [];
+  let textTimelineClips = [];
   let timelineObjectUrls = [];
   let timelineEditableDuration = 1;
   let videoTrackLoading = false;
@@ -489,9 +514,11 @@ export async function startPixiMedia() {
   let timelineClipDragFrame = 0;
   let pendingTimelineClipDragEvent = null;
   let selectedTimelineClip = null;
-  let textOverlayIntervals = [];
-  let textPositionInitialized = false;
+  let selectedTextClip = null;
   let textDragging = false;
+  let skipNextSubtitleMenuDocumentPointerDown = false;
+  let lastTextTapClip = null;
+  let lastTextTapTime = 0;
   const textDragOffset = { x: 0, y: 0 };
   const imageFrame = { height: 0, width: 0, x: 0, y: 0 };
   const imageDragOffset = { x: 0, y: 0 };
@@ -501,6 +528,11 @@ export async function startPixiMedia() {
   let imageDragging = false;
   let imageResizeCorner = "";
   let isExporting = false;
+  const performanceStatsState = {
+    lastUpdateTime: 0,
+    renderCostMs: 0,
+  };
+  const timelineTextMeasureContext = document.createElement("canvas").getContext("2d");
 
   function clearCurrentMedia() {
     app.stop();
@@ -522,10 +554,14 @@ export async function startPixiMedia() {
     exportButton.disabled = true;
     exportProgressLabel.hidden = true;
     isExporting = false;
-    textOverlayIntervals = [];
-    textPositionInitialized = false;
+    selectedTextClip = null;
     textDragging = false;
-    overlayText.visible = false;
+    hideSubtitleContextMenu();
+    finishSubtitleEditing({ commit: false });
+    clearTextOverlayNodes();
+    lastTextTapClip = null;
+    lastTextTapTime = 0;
+    skipNextSubtitleMenuDocumentPointerDown = false;
     imagePositionInitialized = false;
     imageDragging = false;
     imageResizeCorner = "";
@@ -822,6 +858,41 @@ export async function startPixiMedia() {
     statusText.textContent = "Image added";
   }
 
+  function addTextTimelineClip() {
+    if (currentKind !== "video" || !hasPrimaryVideoTrack()) {
+      statusText.textContent = "Choose a video first";
+      return;
+    }
+
+    const rect = getMediaSpriteRect();
+    const startTime = getInsertionTime();
+    const duration = TEXT_CLIP_DEFAULT_DURATION;
+    const clip = {
+      duration,
+      fill: TEXT_CLIP_DEFAULT_COLOR,
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: TEXT_CLIP_DEFAULT_FONT_SIZE,
+      fontStyle: "normal",
+      fontWeight: TEXT_CLIP_DEFAULT_FONT_WEIGHT,
+      startTime,
+      text: TEXT_CLIP_DEFAULT_VALUE,
+      trackIndex: getAvailableTextTrackIndex(startTime, duration),
+      xRatio: 0.5,
+      yRatio: getDefaultTextClipYRatio(rect),
+    };
+
+    textTimelineClips.push(clip);
+    selectTimelineClip("text", clip);
+    selectedTextClip = clip;
+    updateTimelineEditableDuration();
+    renderTimelineClipTracks();
+    updateTextOverlayPosition();
+    drawTimeline();
+    drawEditorTimeline();
+    app.render();
+    statusText.textContent = "Subtitle added";
+  }
+
   function fitMediaSprite() {
     if (!mediaSprite) {
       return;
@@ -919,8 +990,12 @@ export async function startPixiMedia() {
     return getTimelineTrackCount(imageTimelineClips);
   }
 
+  function getTextTrackCount() {
+    return getTimelineTrackCount(textTimelineClips);
+  }
+
   function getEditorPanelRowCount() {
-    return 1 + getAudioTrackCount() + getImageTrackCount();
+    return 1 + getAudioTrackCount() + getImageTrackCount() + getTextTrackCount();
   }
 
   function getPreviewWidth() {
@@ -1003,8 +1078,9 @@ export async function startPixiMedia() {
   function getTrackContentBottom() {
     const audioBottom = getAudioTrackY(Math.max(0, getAudioTrackCount() - 1)) + AUDIO_TRACK_HEIGHT;
     const imageBottom = getImageTrackY(Math.max(0, getImageTrackCount() - 1)) + IMAGE_TRACK_HEIGHT;
+    const textBottom = getTextTrackY(Math.max(0, getTextTrackCount() - 1)) + TEXT_TRACK_HEIGHT;
 
-    return Math.max(getVideoTrackY() + VIDEO_TRACK_HEIGHT, audioBottom, imageBottom);
+    return Math.max(getVideoTrackY() + VIDEO_TRACK_HEIGHT, audioBottom, imageBottom, textBottom);
   }
 
   function getMaxTimelineVerticalScroll() {
@@ -1060,6 +1136,10 @@ export async function startPixiMedia() {
 
   function getImageTrackY(trackIndex = 0) {
     return getAudioTrackY(getAudioTrackCount()) + trackIndex * getTrackPitch();
+  }
+
+  function getTextTrackY(trackIndex = 0) {
+    return getImageTrackY(getImageTrackCount()) + trackIndex * getTrackPitch();
   }
 
   function getTrackPitch() {
@@ -1322,7 +1402,7 @@ export async function startPixiMedia() {
 
   function getCurrentOverlayTransition(intervals) {
     if (currentKind !== "video") {
-      return { alpha: 0, yScale: 0 };
+      return { alpha: 0, axisScale: 0 };
     }
 
     return getOverlayTransitionAtTime(playbackTime, intervals, OVERLAY_FADE_SECONDS);
@@ -1332,22 +1412,114 @@ export async function startPixiMedia() {
     const rect = getMediaSpriteRect();
 
     if (!rect || currentKind !== "video") {
-      overlayText.visible = false;
+      clearTextOverlayNodes();
       return;
     }
 
-    if (!textPositionInitialized) {
-      overlayText.position.set(rect.left + rect.width / 2, rect.top + rect.height * 0.82);
-      textPositionInitialized = true;
+    renderTextOverlays(rect);
+  }
+
+  function clearTextOverlayNodes() {
+    textTimelineClips.forEach((clip) => {
+      clip.overlayNode = null;
+    });
+    textOverlayLayer.removeChildren().forEach((child) => child.destroy());
+  }
+
+  function renderTextOverlays(rect) {
+    const activeClips = getActiveTextTimelineClips();
+
+    clearTextOverlayNodes();
+    textOverlayLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
+
+    for (const clip of activeClips) {
+      const textNode = createSubtitleTextNode(clip, rect);
+
+      clip.overlayNode = textNode;
+      textOverlayLayer.addChild(textNode);
+    }
+  }
+
+  function createSubtitleTextNode(clip, rect) {
+    const textNode = new Text({
+      text: clip.text || TEXT_CLIP_DEFAULT_VALUE,
+      style: getSubtitleTextStyle(clip, rect.width),
+    });
+
+    textNode.anchor.set(0.5);
+    textNode.position.set(
+      rect.left + rect.width * clip.xRatio,
+      rect.top + rect.height * clip.yRatio
+    );
+    textNode.eventMode = "static";
+    textNode.cursor = textDragging && selectedTextClip === clip ? "grabbing" : "grab";
+    textNode.timelineClip = clip;
+    textNode.on("pointerdown", (event) => handleTextPointerDown(clip, event));
+    clampTextClipToMediaRect(clip, textNode, rect);
+    applyTextClipTransition(textNode, clip);
+    textNode.hitArea = new Rectangle(
+      -textNode.width / 2,
+      -textNode.height / 2,
+      textNode.width,
+      textNode.height
+    );
+
+    return textNode;
+  }
+
+  function applyTextClipTransition(textNode, clip) {
+    const transition = getCurrentOverlayTransition([
+      { duration: clip.duration, startTime: clip.startTime },
+    ]);
+
+    textNode.alpha = transition.alpha;
+    textNode.scale.x *= transition.axisScale;
+    textNode.visible = transition.alpha > 0;
+  }
+
+  function getSubtitleTextStyle(clip, wordWrapWidth = getMediaSpriteRect()?.width || VIEW_WIDTH) {
+    const fontSize = Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE;
+
+    return {
+      align: "center",
+      breakWords: true,
+      fill: clip.fill || TEXT_CLIP_DEFAULT_COLOR,
+      fontFamily: clip.fontFamily || "Inter, system-ui, sans-serif",
+      fontSize,
+      fontStyle: clip.fontStyle || "normal",
+      fontWeight: String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT),
+      wordWrap: true,
+      wordWrapWidth: Math.max(1, wordWrapWidth),
+    };
+  }
+
+  function clampTextClipToMediaRect(
+    clip,
+    textNode = clip.overlayNode,
+    rect = getMediaSpriteRect()
+  ) {
+    if (!rect || !textNode) {
+      return;
     }
 
-    overlayText.scale.set(1, 1);
-    clampTextToMediaRect();
-    const transition = getCurrentOverlayTransition(textOverlayIntervals);
+    const halfWidth = Math.min(rect.width / 2, textNode.width / 2);
+    const halfHeight = Math.min(rect.height / 2, textNode.height / 2);
+    const x = Math.min(Math.max(textNode.x, rect.left + halfWidth), rect.right - halfWidth);
+    const y = Math.min(Math.max(textNode.y, rect.top + halfHeight), rect.bottom - halfHeight);
 
-    overlayText.alpha = transition.alpha;
-    overlayText.scale.x = transition.yScale;
-    overlayText.visible = overlayText.alpha > 0;
+    textNode.position.set(x, y);
+    clip.xRatio = (x - rect.left) / rect.width;
+    clip.yRatio = (y - rect.top) / rect.height;
+  }
+
+  function getDefaultTextClipYRatio(rect) {
+    if (!rect) {
+      return 0.9;
+    }
+
+    const y = rect.height - TEXT_CLIP_BOTTOM_MARGIN - TEXT_CLIP_DEFAULT_FONT_SIZE / 2;
+
+    return Math.min(Math.max(y / rect.height, 0), 1);
   }
 
   function updateImageOverlayPosition() {
@@ -1376,31 +1548,11 @@ export async function startPixiMedia() {
     ]);
 
     overlayImageGroup.alpha = transition.alpha;
-    overlayImageSprite.scale.x *= transition.yScale;
+    overlayImageSprite.scale.x *= transition.axisScale;
     overlayImageGroup.visible = overlayImageGroup.alpha > 0;
     renderExtraImageOverlays(
       rect,
       activeClips.filter((clip) => clip !== activeClip)
-    );
-  }
-
-  function clampTextToMediaRect() {
-    const rect = getMediaSpriteRect();
-
-    if (!rect) {
-      return;
-    }
-
-    const halfWidth = Math.min(rect.width / 2, overlayText.width / 2);
-    const halfHeight = Math.min(rect.height / 2, overlayText.height / 2);
-
-    overlayText.x = Math.min(
-      Math.max(overlayText.x, rect.left + halfWidth),
-      rect.right - halfWidth
-    );
-    overlayText.y = Math.min(
-      Math.max(overlayText.y, rect.top + halfHeight),
-      rect.bottom - halfHeight
     );
   }
 
@@ -1531,7 +1683,7 @@ export async function startPixiMedia() {
       sprite.position.set(frame.width / 2, frame.height / 2);
       sprite.width = frame.width;
       sprite.height = frame.height;
-      sprite.scale.x *= transition.yScale;
+      sprite.scale.x *= transition.axisScale;
       group.addChild(sprite);
       overlayImageExtras.addChild(group);
     }
@@ -1983,12 +2135,20 @@ export async function startPixiMedia() {
     imageTrackTextures = [];
   }
 
+  function clearTextTrackClips() {
+    editorTimelineTextClips.removeChildren().forEach((child) => child.destroy({ children: true }));
+    textTimelineClips.forEach((clip) => {
+      clip.timelineContainer = null;
+    });
+  }
+
   function clearTimelineTracks() {
     pauseTimelineAudio();
     selectedTimelineClip = null;
     clearVideoTrackFrames();
     clearAudioTrackClips();
     clearImageTrackClips({ destroyTextures: true });
+    clearTextTrackClips();
     clearEditorTimelineRuler();
     videoTimelineClips.forEach((clip) => {
       if (clip.provider && clip.provider !== videoFrameProvider) {
@@ -2011,6 +2171,7 @@ export async function startPixiMedia() {
     videoTimelineClips = [];
     audioTimelineClips = [];
     imageTimelineClips = [];
+    textTimelineClips = [];
     timelineObjectUrls.forEach((url) => URL.revokeObjectURL(url));
     timelineObjectUrls = [];
   }
@@ -2070,6 +2231,10 @@ export async function startPixiMedia() {
 
     for (let index = 0; index < getImageTrackCount(); index += 1) {
       drawTrackBackground(getImageTrackY(index), IMAGE_TRACK_HEIGHT);
+    }
+
+    for (let index = 0; index < getTextTrackCount(); index += 1) {
+      drawTrackBackground(getTextTrackY(index), TEXT_TRACK_HEIGHT);
     }
 
     editorTimelineBackground
@@ -2154,6 +2319,10 @@ export async function startPixiMedia() {
 
     for (let index = 0; index < getImageTrackCount(); index += 1) {
       addEditorTrackLabel(`Image ${index + 1}`, getImageTrackY(index) + IMAGE_TRACK_HEIGHT / 2);
+    }
+
+    for (let index = 0; index < getTextTrackCount(); index += 1) {
+      addEditorTrackLabel(`Text ${index + 1}`, getTextTrackY(index) + TEXT_TRACK_HEIGHT / 2);
     }
   }
 
@@ -2576,11 +2745,137 @@ export async function startPixiMedia() {
     editorTimelineImageClips.addChild(container);
   }
 
+  function renderTextTimelineClip(clip) {
+    const container = new Container();
+    const background = new Graphics();
+    const x = clip.startTime * TIMELINE_PIXELS_PER_SECOND;
+    const y = getTextTrackY(getClipTrackIndex(clip)) + 2;
+    const width = Math.max(1, clip.duration * TIMELINE_PIXELS_PER_SECOND);
+    const height = TEXT_TRACK_HEIGHT - 4;
+    const label = createTimelineClipLabel(
+      getTimelineClipLabelText(clip.text, width - TIMELINE_TEXT_LABEL_PADDING),
+      0xf8fafc
+    );
+    const selected = isSelectedTimelineClip("text", clip);
+
+    container.position.set(x, y);
+    clip.timelineContainer = container;
+    container.eventMode = "static";
+    container.cursor = playbackPlaying ? "default" : "grab";
+    container.hitArea = new Rectangle(0, 0, width, height);
+    container.on("pointerdown", (event) =>
+      handleTimelineClipPointerDown("text", clip, event, container)
+    );
+
+    background
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x14532d, alpha: selected ? 0.98 : 0.9 })
+      .stroke({ color: selected ? 0xf8fafc : 0x4ade80, width: selected ? 2 : 1 });
+    drawClipEdgeHandles(background, width, height, 0x86efac);
+
+    container.addChild(background);
+    addTimelineTextLabel(container, label, width, height);
+    container.addChild(
+      createClipEdgeHandle("trim-start", "text", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "text", clip, width, height, container)
+    );
+    editorTimelineTextClips.addChild(container);
+  }
+
+  function createTimelineClipLabel(text, fill) {
+    const label = new Text({
+      text,
+      style: {
+        fill,
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: 12,
+        fontWeight: "700",
+        wordWrap: false,
+        breakWords: false,
+      },
+    });
+
+    label.anchor.set(0, 0.5);
+    return label;
+  }
+
+  function getTimelineClipLabelText(value, width = 126) {
+    const text = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const fallback = text || TEXT_CLIP_DEFAULT_VALUE;
+    const maxWidth = Math.max(0, width);
+
+    if (measureTimelineClipLabelText(fallback) <= maxWidth) {
+      return fallback;
+    }
+
+    if (measureTimelineClipLabelText("…") > maxWidth) {
+      return "";
+    }
+
+    let low = 0;
+    let high = fallback.length;
+    let result = "…";
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = `${fallback.slice(0, mid)}…`;
+
+      if (measureTimelineClipLabelText(candidate) <= maxWidth) {
+        result = candidate;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    return result;
+  }
+
+  function measureTimelineClipLabelText(text) {
+    if (!timelineTextMeasureContext) {
+      return String(text).length * 7;
+    }
+
+    timelineTextMeasureContext.font = TIMELINE_TEXT_LABEL_FONT;
+
+    return timelineTextMeasureContext.measureText(text).width;
+  }
+
+  function getTimelineTextLabelMask(width, height) {
+    const mask = new Graphics();
+    const labelWidth = Math.max(0, width - TIMELINE_TEXT_LABEL_PADDING);
+
+    if (labelWidth <= 0) {
+      return null;
+    }
+
+    mask.rect(10, 0, labelWidth, height).fill({ color: 0xffffff });
+
+    return mask;
+  }
+
+  function addTimelineTextLabel(container, label, width, height) {
+    const mask = getTimelineTextLabelMask(width, height);
+
+    label.position.set(10, height / 2);
+
+    if (!mask) {
+      return;
+    }
+
+    label.mask = mask;
+    container.addChild(mask, label);
+  }
+
   function renderTimelineClipTracks() {
     clearAudioTrackClips();
     clearImageTrackClips();
+    clearTextTrackClips();
     audioTimelineClips.forEach((clip) => renderAudioTimelineClip(clip, clip.samples || null));
     imageTimelineClips.forEach((clip) => renderImageTimelineClip(clip));
+    textTimelineClips.forEach((clip) => renderTextTimelineClip(clip));
   }
 
   function updateTimelineClipDragPreview() {
@@ -2623,6 +2918,8 @@ export async function startPixiMedia() {
       addAudioTimelineClipContent(container, clip, width, height);
     } else if (type === "image") {
       addImageTimelineClipContent(container, clip, width, height);
+    } else if (type === "text") {
+      addTextTimelineClipContent(container, clip, width, height);
     } else {
       const graphic = new Graphics();
 
@@ -2676,12 +2973,36 @@ export async function startPixiMedia() {
     );
   }
 
+  function addTextTimelineClipContent(container, clip, width, height) {
+    const background = new Graphics();
+    const label = createTimelineClipLabel(
+      getTimelineClipLabelText(clip.text, width - TIMELINE_TEXT_LABEL_PADDING),
+      0xf8fafc
+    );
+
+    background
+      .roundRect(0, 0, width, height, 5)
+      .fill({ color: 0x14532d, alpha: 0.98 })
+      .stroke({ color: 0xf8fafc, width: 2 });
+    drawClipEdgeHandles(background, width, height, 0x86efac);
+    container.addChild(background);
+    addTimelineTextLabel(container, label, width, height);
+    container.addChild(
+      createClipEdgeHandle("trim-start", "text", clip, width, height, container),
+      createClipEdgeHandle("trim-end", "text", clip, width, height, container)
+    );
+  }
+
   function getTimelineClipY(type, trackIndex = 0) {
     if (type === "video") {
       return getVideoTrackY();
     }
 
-    return type === "audio" ? getAudioTrackY(trackIndex) : getImageTrackY(trackIndex);
+    if (type === "audio") {
+      return getAudioTrackY(trackIndex);
+    }
+
+    return type === "image" ? getImageTrackY(trackIndex) : getTextTrackY(trackIndex);
   }
 
   function getTimelineClipHeight(type) {
@@ -2689,7 +3010,11 @@ export async function startPixiMedia() {
       return VIDEO_TRACK_HEIGHT;
     }
 
-    return type === "audio" ? AUDIO_TRACK_HEIGHT : IMAGE_TRACK_HEIGHT;
+    if (type === "audio") {
+      return AUDIO_TRACK_HEIGHT;
+    }
+
+    return type === "image" ? IMAGE_TRACK_HEIGHT : TEXT_TRACK_HEIGHT;
   }
 
   function getVideoTimelineDuration() {
@@ -2699,20 +3024,43 @@ export async function startPixiMedia() {
     );
   }
 
-  function getTimelineDuration() {
-    const clipEnds = [...videoTimelineClips, ...audioTimelineClips, ...imageTimelineClips].map(
-      (clip) => clip.startTime + clip.duration
-    );
+  function getTimelineContentDuration() {
+    const clipEnds = [
+      ...videoTimelineClips,
+      ...audioTimelineClips,
+      ...imageTimelineClips,
+      ...textTimelineClips,
+    ].map((clip) => clip.startTime + clip.duration);
     const mediaDuration =
       currentKind === "audio" && mediaElement && Number.isFinite(mediaElement.duration)
         ? mediaElement.duration
         : 0;
 
-    return Math.max(mediaDuration, timelineEditableDuration, 1, ...clipEnds);
+    return Math.max(mediaDuration, 1, ...clipEnds);
   }
 
-  function updateTimelineEditableDuration() {
-    timelineEditableDuration = Math.max(timelineEditableDuration, getTimelineDuration());
+  function getTimelineDuration() {
+    return Math.max(timelineEditableDuration, getTimelineContentDuration());
+  }
+
+  function updateTimelineEditableDuration(previousDuration = timelineEditableDuration) {
+    const nextDuration = getTimelineContentDuration();
+    const changed =
+      Math.abs(previousDuration - nextDuration) > 0.001 ||
+      Math.abs(timelineEditableDuration - nextDuration) > 0.001;
+
+    timelineEditableDuration = nextDuration;
+
+    if (currentKind === "video" && playbackTime > nextDuration) {
+      playbackTime = nextDuration;
+      syncTimelineAudio();
+    }
+
+    if (changed) {
+      clearEditorTimelineRuler();
+    }
+
+    return changed;
   }
 
   function getInsertionTime() {
@@ -2728,17 +3076,19 @@ export async function startPixiMedia() {
   }
 
   function renderScene(ticker) {
+    const renderStartTime = performance.now();
+
     if (currentKind === "audio") {
       drawAudioVisualizer();
       drawTimeline();
       hideEditorTimeline();
-      overlayText.visible = false;
+      clearTextOverlayNodes();
       overlayImageGroup.visible = false;
     } else if (currentKind === "empty") {
       drawEmptyBackground();
       drawDisabledTimeline();
       hideEditorTimeline();
-      overlayText.visible = false;
+      clearTextOverlayNodes();
       overlayImageGroup.visible = false;
     } else {
       if (playbackPlaying) {
@@ -2767,6 +3117,114 @@ export async function startPixiMedia() {
       drawTimeline();
       drawEditorTimeline();
     }
+
+    updatePerformanceStats(performance.now() - renderStartTime);
+  }
+
+  function updatePerformanceStats(renderCostMs) {
+    const previousCost = performanceStatsState.renderCostMs || renderCostMs;
+    const now = performance.now();
+
+    performanceStatsState.renderCostMs = previousCost * 0.82 + renderCostMs * 0.18;
+
+    if (now - performanceStatsState.lastUpdateTime < PERFORMANCE_UPDATE_INTERVAL_MS) {
+      return;
+    }
+
+    performanceStatsState.lastUpdateTime = now;
+    performanceStats.textContent = [
+      `CPU ${formatPercent(
+        (performanceStatsState.renderCostMs / PERFORMANCE_FRAME_BUDGET_MS) * 100
+      )}`,
+      `GPU ${formatBytes(estimateGpuMemoryBytes())}`,
+      `MEM ${formatMemoryUsage()}`,
+    ].join(" · ");
+  }
+
+  function estimateGpuMemoryBytes() {
+    const textures = new Set([
+      overlayImageTexture,
+      mediaTexture,
+      ...videoTrackTextures,
+      ...imageTrackTextures,
+      ...imageTimelineClips.map((clip) => clip.texture),
+    ]);
+    let bytes = estimateRendererBackingBytes(app) + estimateRendererBackingBytes(timelineApp);
+
+    textures.forEach((texture) => {
+      bytes += estimateTextureBytes(texture);
+    });
+
+    return bytes;
+  }
+
+  function estimateRendererBackingBytes(targetApp) {
+    const renderer = targetApp?.renderer;
+
+    if (!renderer) {
+      return 0;
+    }
+
+    const backingCanvas = renderer.canvas || targetApp.canvas;
+    const width = Number(backingCanvas?.width || renderer.width || targetApp.screen?.width || 0);
+    const height = Number(
+      backingCanvas?.height || renderer.height || targetApp.screen?.height || 0
+    );
+
+    return Math.max(0, width * height * 4);
+  }
+
+  function estimateTextureBytes(texture) {
+    if (!texture || texture.destroyed) {
+      return 0;
+    }
+
+    const source = texture.source || texture.baseTexture || {};
+    const resolution = Number(source.resolution || texture.resolution) || 1;
+    const width = Number(
+      source.pixelWidth || source.realWidth || source.width || texture.width || 0
+    );
+    const height = Number(
+      source.pixelHeight || source.realHeight || source.height || texture.height || 0
+    );
+
+    return Math.max(0, width * height * resolution * resolution * 4);
+  }
+
+  function formatMemoryUsage() {
+    const memory = performance.memory;
+
+    if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
+      return "N/A";
+    }
+
+    if (Number.isFinite(memory.jsHeapSizeLimit)) {
+      return `${formatBytes(memory.usedJSHeapSize)}/${formatBytes(memory.jsHeapSizeLimit)}`;
+    }
+
+    return formatBytes(memory.usedJSHeapSize);
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return "0 MB";
+    }
+
+    const megabytes = bytes / 1024 / 1024;
+
+    if (megabytes < 100) {
+      return `${megabytes.toFixed(1)} MB`;
+    }
+
+    return `${Math.round(megabytes)} MB`;
+  }
+
+  function formatPercent(value) {
+    if (!Number.isFinite(value)) {
+      return "N/A";
+    }
+
+    return `${Math.max(0, Math.min(999, value)).toFixed(0)}%`;
   }
 
   function resizeCanvas() {
@@ -2889,6 +3347,16 @@ export async function startPixiMedia() {
   ) {
     suppressNextCanvasToggle = true;
 
+    if (event.button !== undefined && event.button !== 0) {
+      cancelPendingTimelineClipDragFrame();
+      timelineClipDrag = null;
+      selectTimelineClip(type, clip);
+      renderTimelineClipTracks();
+      drawEditorTimeline();
+      event.stopPropagation();
+      return;
+    }
+
     if (playbackPlaying) {
       statusText.textContent = "Pause before dragging clips";
       event.stopPropagation();
@@ -2902,14 +3370,24 @@ export async function startPixiMedia() {
       ? targetContainer.toLocal(event.global).x
       : local.x - clip.startTime * TIMELINE_PIXELS_PER_SECOND;
     const mode = forcedMode || getTimelineClipPointerMode(clip, clipLocalX);
+    const originalTrackIndex = getClipTrackIndex(clip);
     const timelineDuration =
-      type === "video" && mode === "move"
-        ? Math.max(timelineEditableDuration, getTimelineDuration()) + 60
-        : Math.max(timelineEditableDuration, getTimelineDuration());
+      Math.max(timelineEditableDuration, getTimelineDuration()) +
+      (mode === "move" ? TIMELINE_DRAG_EXTENSION_SECONDS : 0);
     const moveBounds = null;
+    const maxTargetTrackIndex =
+      type === "video"
+        ? 0
+        : type === "audio"
+          ? getAudioTrackCount()
+          : type === "image"
+            ? getImageTrackCount()
+            : getTextTrackCount();
 
     timelineClipDrag = {
       clip,
+      lastTimelineDuration: getTimelineDuration(),
+      maxTargetTrackIndex,
       moveBounds,
       mode,
       originalDuration: clip.duration,
@@ -2918,7 +3396,7 @@ export async function startPixiMedia() {
       pointerOffsetSeconds: local.x / TIMELINE_PIXELS_PER_SECOND - clip.startTime,
       targetContainer: targetContainer || clip.timelineContainer,
       targetStartTime: clip.startTime,
-      targetTrackIndex: getClipTrackIndex(clip),
+      targetTrackIndex: originalTrackIndex,
       timelineDuration,
       type,
     };
@@ -2966,17 +3444,10 @@ export async function startPixiMedia() {
     updateTimelineClipDrag(event);
 
     const { clip, mode, targetStartTime, targetTrackIndex, type } = timelineClipDrag;
-    const clips = getTimelineClipsByType(type);
-    const finalTrackIndex =
-      mode === "move" &&
-      type !== "video" &&
-      hasTimelineClipOverlap(type, clip, targetTrackIndex, targetStartTime)
-        ? getNextTrackIndex(clips, clip)
-        : targetTrackIndex;
 
     if (mode === "move") {
       clip.startTime = targetStartTime;
-      clip.trackIndex = finalTrackIndex;
+      clip.trackIndex = targetTrackIndex;
 
       if (type === "video") {
         normalizeVideoTimelineClips();
@@ -3009,13 +3480,21 @@ export async function startPixiMedia() {
     }
 
     const { clip, mode, type } = timelineClipDrag;
+    const previousDuration = timelineClipDrag.lastTimelineDuration ?? getTimelineDuration();
     const target =
       mode === "move" ? getTimelineClipDragTarget(event) : getTimelineClipTrimTarget(event);
 
     if (mode === "move") {
-      clip.startTime = target.startTime;
+      const startTime = getTimelineClipFollowStartTime(
+        type,
+        clip,
+        target.trackIndex,
+        target.startTime
+      );
+
+      clip.startTime = startTime;
       clip.trackIndex = target.trackIndex;
-      timelineClipDrag.targetStartTime = target.startTime;
+      timelineClipDrag.targetStartTime = startTime;
       timelineClipDrag.targetTrackIndex = target.trackIndex;
     } else {
       clip.startTime = target.startTime;
@@ -3025,10 +3504,25 @@ export async function startPixiMedia() {
       timelineClipDrag.targetTrackIndex = getClipTrackIndex(clip);
     }
 
+    const durationChanged = updateTimelineEditableDuration(previousDuration);
+
+    timelineClipDrag.lastTimelineDuration = getTimelineDuration();
+    timelineClipDrag.timelineDuration = Math.max(
+      timelineClipDrag.timelineDuration,
+      getTimelineDuration() + (mode === "move" ? TIMELINE_DRAG_EXTENSION_SECONDS : 0)
+    );
     updateTimelineClipDragPreview();
+
+    if (durationChanged) {
+      drawTimeline();
+      buildEditorTimelineRuler(getTimelineDuration());
+      app.render();
+      timelineApp.render();
+    }
+
     statusText.textContent =
       mode === "move" && hasTimelineClipOverlap(type, clip, target.trackIndex, target.startTime)
-        ? "Release to move into a new track"
+        ? "Release to follow clip"
         : mode === "move"
           ? "Dragging clip"
           : "Trimming clip";
@@ -3060,7 +3554,8 @@ export async function startPixiMedia() {
   }
 
   function getTimelineClipDragTarget(event) {
-    const { clip, moveBounds, pointerOffsetSeconds, timelineDuration, type } = timelineClipDrag;
+    const { clip, maxTargetTrackIndex, moveBounds, pointerOffsetSeconds, timelineDuration, type } =
+      timelineClipDrag;
     const local = editorTimelineTracks.toLocal(event.global);
     const minStartTime = moveBounds?.minStartTime ?? 0;
     const maxStartTime = moveBounds?.maxStartTime ?? Math.max(0, timelineDuration - clip.duration);
@@ -3071,7 +3566,7 @@ export async function startPixiMedia() {
 
     return {
       startTime,
-      trackIndex: getTimelineTrackIndexFromY(type, local.y),
+      trackIndex: getTimelineTrackIndexFromY(type, local.y, maxTargetTrackIndex),
     };
   }
 
@@ -3099,7 +3594,9 @@ export async function startPixiMedia() {
 
     if (mode === "trim-start") {
       const minStartTime =
-        type === "image" ? 0 : Math.max(0, originalStartTime - originalSourceOffset);
+        type === "image" || type === "text"
+          ? 0
+          : Math.max(0, originalStartTime - originalSourceOffset);
       const maxStartTime = originalEndTime - CLIP_MIN_DURATION;
       const startTime = Math.min(
         Math.max(pointerTime, minStartTime, neighborBounds.previousEnd),
@@ -3107,7 +3604,7 @@ export async function startPixiMedia() {
       );
       const duration = Math.max(CLIP_MIN_DURATION, originalEndTime - startTime);
       const sourceOffset =
-        type === "image"
+        type === "image" || type === "text"
           ? undefined
           : Math.max(0, originalSourceOffset + startTime - originalStartTime);
 
@@ -3116,7 +3613,7 @@ export async function startPixiMedia() {
 
     const sourceDuration = getClipSourceDuration(clip);
     const maxEndTime =
-      type === "image"
+      type === "image" || type === "text"
         ? Math.max(pointerTime, originalStartTime + CLIP_MIN_DURATION)
         : originalStartTime + Math.max(CLIP_MIN_DURATION, sourceDuration - originalSourceOffset);
     const minEndTime = originalStartTime + CLIP_MIN_DURATION;
@@ -3128,7 +3625,7 @@ export async function startPixiMedia() {
 
     return {
       duration: Math.max(CLIP_MIN_DURATION, endTime - originalStartTime),
-      sourceOffset: type === "image" ? undefined : originalSourceOffset,
+      sourceOffset: type === "image" || type === "text" ? undefined : originalSourceOffset,
       startTime: originalStartTime,
     };
   }
@@ -3154,16 +3651,51 @@ export async function startPixiMedia() {
     return { nextStart, previousEnd };
   }
 
-  function getTimelineTrackIndexFromY(type, y) {
+  function getTimelineClipFollowStartTime(type, movingClip, trackIndex, startTime) {
+    let resolvedStartTime = Math.max(0, Number.isFinite(startTime) ? startTime : 0);
+    const clips = getTimelineClipsByType(type)
+      .filter((clip) => clip !== movingClip && getClipTrackIndex(clip) === trackIndex)
+      .sort((left, right) => left.startTime - right.startTime);
+
+    for (const clip of clips) {
+      const clipEnd = clip.startTime + clip.duration;
+      const resolvedEndTime = resolvedStartTime + movingClip.duration;
+
+      if (
+        resolvedStartTime < clipEnd - TRACK_OVERLAP_EPSILON &&
+        resolvedEndTime > clip.startTime + TRACK_OVERLAP_EPSILON
+      ) {
+        resolvedStartTime = clipEnd;
+      }
+    }
+
+    return resolvedStartTime;
+  }
+
+  function getTimelineTrackIndexFromY(type, y, maxTargetTrackIndex = null) {
     if (type === "video") {
       return 0;
     }
 
-    const count = type === "audio" ? getAudioTrackCount() : getImageTrackCount();
-    const firstY = type === "audio" ? getAudioTrackY(0) : getImageTrackY(0);
+    const count =
+      type === "audio"
+        ? getAudioTrackCount()
+        : type === "image"
+          ? getImageTrackCount()
+          : getTextTrackCount();
+    const firstY =
+      type === "audio"
+        ? getAudioTrackY(0)
+        : type === "image"
+          ? getImageTrackY(0)
+          : getTextTrackY(0);
     const rawIndex = Math.round((y - firstY) / getTrackPitch());
+    const maxIndex =
+      maxTargetTrackIndex === null
+        ? Math.max(0, count - 1)
+        : Math.max(0, Math.min(maxTargetTrackIndex, count));
 
-    return Math.min(Math.max(rawIndex, 0), Math.max(0, count - 1));
+    return Math.min(Math.max(rawIndex, 0), maxIndex);
   }
 
   function getTimelineClipsByType(type) {
@@ -3171,7 +3703,11 @@ export async function startPixiMedia() {
       return videoTimelineClips;
     }
 
-    return type === "audio" ? audioTimelineClips : imageTimelineClips;
+    if (type === "audio") {
+      return audioTimelineClips;
+    }
+
+    return type === "image" ? imageTimelineClips : textTimelineClips;
   }
 
   function getSelectedTimelineClip() {
@@ -3203,11 +3739,17 @@ export async function startPixiMedia() {
 
     if (type === "image") {
       selectedImageClip = clip;
+    } else if (type === "text") {
+      selectedTextClip = clip;
     }
   }
 
-  function hasTimelineClipOverlap(type, movingClip, trackIndex, startTime) {
-    const endTime = startTime + movingClip.duration;
+  function hasTimelineClipOverlap(type, movingClip, trackIndex, startTime, duration = null) {
+    const clipDuration =
+      duration === null
+        ? Math.max(0, Number.isFinite(movingClip?.duration) ? movingClip.duration : 0)
+        : duration;
+    const endTime = startTime + clipDuration;
 
     return getTimelineClipsByType(type).some((clip) => {
       if (clip === movingClip || getClipTrackIndex(clip) !== trackIndex) {
@@ -3390,6 +3932,10 @@ export async function startPixiMedia() {
     selectedTimelineClip = null;
     if (selected.type === "image" && selectedImageClip === selected.clip) {
       selectedImageClip = null;
+    } else if (selected.type === "text" && selectedTextClip === selected.clip) {
+      selectedTextClip = null;
+      hideSubtitleContextMenu();
+      finishSubtitleEditing({ commit: false });
     }
 
     refreshTimelineAfterClipEdit(selected.type, { rebuildVideo: selected.type === "video" });
@@ -3463,6 +4009,20 @@ export async function startPixiMedia() {
       };
     }
 
+    if (type === "text") {
+      return {
+        ...baseClip,
+        text: clip.text,
+        fill: clip.fill,
+        fontFamily: clip.fontFamily,
+        fontSize: clip.fontSize,
+        fontStyle: clip.fontStyle,
+        fontWeight: clip.fontWeight,
+        xRatio: clip.xRatio,
+        yRatio: clip.yRatio,
+      };
+    }
+
     return {
       ...baseClip,
       imageFrame: clip.imageFrame ? { ...clip.imageFrame } : undefined,
@@ -3523,14 +4083,18 @@ export async function startPixiMedia() {
   }
 
   function isTimelineResourceShared(key, value) {
-    return [...videoTimelineClips, ...audioTimelineClips, ...imageTimelineClips].some(
-      (clip) => clip[key] === value
-    );
+    return [
+      ...videoTimelineClips,
+      ...audioTimelineClips,
+      ...imageTimelineClips,
+      ...textTimelineClips,
+    ].some((clip) => clip[key] === value);
   }
 
   function refreshTimelineAfterClipEdit(type, { rebuildVideo = false } = {}) {
     pauseTimelineAudio();
     syncTimelineAudio();
+    updateTimelineEditableDuration();
 
     if (type === "video" && rebuildVideo) {
       startVideoTrackBuild();
@@ -3541,6 +4105,7 @@ export async function startPixiMedia() {
     clearEditorTimelineRuler();
     updateVideoTexture(true);
     updateImageOverlayPosition();
+    updateTextOverlayPosition();
     drawTimeline();
     drawEditorTimeline();
     app.render();
@@ -3568,26 +4133,28 @@ export async function startPixiMedia() {
     app.stop();
   }
 
-  function getTextOverlayExportState() {
+  function getTextOverlayExportStates() {
     const rect = getMediaSpriteRect();
 
-    if (!rect || textOverlayIntervals.length === 0) {
-      return null;
+    if (!rect) {
+      return [];
     }
 
-    return {
-      fillStyle: subtitleColorInput.value,
-      fontFamily: `${subtitleFontSelect.value}, system-ui, sans-serif`,
-      fontStyle: subtitleStyleSelect.value.includes("Italic") ? "italic" : "normal",
-      fontSizeRatio: Number(overlayText.style.fontSize || 42) / rect.height,
-      fontWeight: subtitleStyleSelect.value.includes("Bold") ? "800" : "400",
-      intervals: textOverlayIntervals,
+    return textTimelineClips.map((clip) => ({
+      duration: clip.duration,
+      fillStyle: clip.fill || TEXT_CLIP_DEFAULT_COLOR,
+      fontFamily: clip.fontFamily || "Inter, system-ui, sans-serif",
+      fontStyle: clip.fontStyle || "normal",
+      fontSizeRatio: (Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE) / rect.height,
+      fontWeight: String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT),
+      startTime: clip.startTime,
+      strokeStyle: "transparent",
+      text: clip.text || TEXT_CLIP_DEFAULT_VALUE,
       transitionSeconds: OVERLAY_FADE_SECONDS,
-      strokeStyle: "rgba(0, 0, 0, 0.82)",
-      text: overlayText.text,
-      xRatio: (overlayText.x - rect.left) / rect.width,
-      yRatio: (overlayText.y - rect.top) / rect.height,
-    };
+      maxWidthRatio: 1,
+      xRatio: clip.xRatio,
+      yRatio: clip.yRatio,
+    }));
   }
 
   function getImageOverlayExportStates() {
@@ -3647,6 +4214,26 @@ export async function startPixiMedia() {
 
   function getActiveImageTimelineClip() {
     return getSelectedImageClip();
+  }
+
+  function getActiveTextTimelineClips() {
+    if (currentKind !== "video") {
+      return [];
+    }
+
+    return textTimelineClips.filter(
+      (clip) => playbackTime >= clip.startTime && playbackTime < clip.startTime + clip.duration
+    );
+  }
+
+  function getAvailableTextTrackIndex(startTime, duration) {
+    let trackIndex = 0;
+
+    while (hasTimelineClipOverlap("text", null, trackIndex, startTime, duration)) {
+      trackIndex += 1;
+    }
+
+    return trackIndex;
   }
 
   function downloadBlob(blob, fileNameValue) {
@@ -3726,7 +4313,7 @@ export async function startPixiMedia() {
       return;
     }
 
-    const textOverlayState = getTextOverlayExportState();
+    const textOverlayStates = getTextOverlayExportStates();
     const imageOverlayStates = getImageOverlayExportStates();
     const hasVideoTimelineEdit =
       videoTimelineClips.length !== 1 ||
@@ -3739,7 +4326,7 @@ export async function startPixiMedia() {
 
     if (
       !hasVideoTimelineEdit &&
-      !textOverlayState &&
+      textOverlayStates.length === 0 &&
       imageOverlayStates.length === 0 &&
       audioTimelineClips.length === 0
     ) {
@@ -3778,8 +4365,8 @@ export async function startPixiMedia() {
           startTime: clip.startTime,
         })),
         {
-          ...textOverlayState,
           images: imageOverlayStates,
+          texts: textOverlayStates,
         },
         {
           audioBuffer,
@@ -3813,32 +4400,63 @@ export async function startPixiMedia() {
     }
   }
 
-  function handleTextPointerDown(event) {
-    if (currentKind !== "video") {
+  function handleTextPointerDown(clip, event) {
+    if (currentKind !== "video" || !clip) {
       return;
     }
 
+    if (event.button !== undefined && event.button !== 0) {
+      handleTextRightDown(clip, event);
+      return;
+    }
+
+    const now = performance.now();
+
+    if (lastTextTapClip === clip && now - lastTextTapTime <= TEXT_DOUBLE_TAP_MS) {
+      textDragging = false;
+      lastTextTapClip = null;
+      lastTextTapTime = 0;
+      handleTextDoubleClick(clip, event);
+      return;
+    }
+
+    lastTextTapClip = clip;
+    lastTextTapTime = now;
+    hideSubtitleContextMenu();
+    finishSubtitleEditing();
+    selectTimelineClip("text", clip);
+    selectedTextClip = clip;
     suppressNextCanvasToggle = true;
     textDragging = true;
-    overlayText.cursor = "grabbing";
 
     const local = textLayer.toLocal(event.global);
+    const rect = getMediaSpriteRect();
+    const x = rect ? rect.left + rect.width * clip.xRatio : 0;
+    const y = rect ? rect.top + rect.height * clip.yRatio : 0;
 
-    textDragOffset.x = overlayText.x - local.x;
-    textDragOffset.y = overlayText.y - local.y;
+    textDragOffset.x = x - local.x;
+    textDragOffset.y = y - local.y;
     event.stopPropagation();
   }
 
   function handleTextPointerMove(event) {
-    if (!textDragging) {
+    if (!textDragging || !selectedTextClip) {
       return;
     }
 
     const local = textLayer.toLocal(event.global);
+    const rect = getMediaSpriteRect();
+    const node = selectedTextClip.overlayNode;
 
-    overlayText.position.set(local.x + textDragOffset.x, local.y + textDragOffset.y);
-    clampTextToMediaRect();
+    if (!rect || !node) {
+      return;
+    }
+
+    node.position.set(local.x + textDragOffset.x, local.y + textDragOffset.y);
+    clampTextClipToMediaRect(selectedTextClip, node, rect);
+    updateTextOverlayPosition();
     app.render();
+    event.stopPropagation();
   }
 
   function handleTextPointerUp() {
@@ -3847,7 +4465,174 @@ export async function startPixiMedia() {
     }
 
     textDragging = false;
-    overlayText.cursor = "grab";
+    updateTextOverlayPosition();
+    app.render();
+  }
+
+  function handleTextRightDown(clip, event) {
+    if (currentKind !== "video" || !clip) {
+      return;
+    }
+
+    suppressNextCanvasToggle = true;
+    finishSubtitleEditing();
+    selectTimelineClip("text", clip);
+    selectedTextClip = clip;
+    showSubtitleContextMenu(clip, event);
+    event.stopPropagation();
+  }
+
+  function handleTextDoubleClick(clip, event) {
+    if (currentKind !== "video" || !clip) {
+      return;
+    }
+
+    suppressNextCanvasToggle = true;
+    hideSubtitleContextMenu();
+    selectTimelineClip("text", clip);
+    selectedTextClip = clip;
+    startSubtitleEditing(clip);
+    event.stopPropagation();
+  }
+
+  function showSubtitleContextMenu(clip, event) {
+    const clientPoint = getClientPointFromPixiEvent(event);
+
+    subtitleColorInput.value = normalizeHexColor(clip.fill || TEXT_CLIP_DEFAULT_COLOR);
+    subtitleSizeInput.value = String(Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE);
+    subtitleWeightSelect.value = String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT);
+    subtitleContextMenu.style.left = `${clientPoint.x}px`;
+    subtitleContextMenu.style.top = `${clientPoint.y}px`;
+    subtitleContextMenu.hidden = false;
+    skipNextSubtitleMenuDocumentPointerDown = true;
+  }
+
+  function hideSubtitleContextMenu() {
+    subtitleContextMenu.hidden = true;
+    skipNextSubtitleMenuDocumentPointerDown = false;
+  }
+
+  function handleSubtitleStyleChange() {
+    if (!selectedTextClip) {
+      return;
+    }
+
+    selectedTextClip.fill = subtitleColorInput.value || TEXT_CLIP_DEFAULT_COLOR;
+    selectedTextClip.fontSize = Math.min(
+      Math.max(Number(subtitleSizeInput.value) || TEXT_CLIP_DEFAULT_FONT_SIZE, 8),
+      96
+    );
+    selectedTextClip.fontWeight = subtitleWeightSelect.value || TEXT_CLIP_DEFAULT_FONT_WEIGHT;
+    updateTextOverlayPosition();
+    renderTimelineClipTracks();
+    drawEditorTimeline();
+    app.render();
+  }
+
+  function startSubtitleEditing(clip) {
+    const rect = getMediaSpriteRect();
+    const node = clip.overlayNode;
+
+    if (!rect || !node) {
+      return;
+    }
+
+    const clientPoint = getClientPointFromCanvasPoint(node.x, node.y);
+    const bounds = canvas.getBoundingClientRect();
+    const width = Math.max(140, Math.min(bounds.width - 24, node.width + 40));
+
+    subtitleEditInput.value = clip.text || TEXT_CLIP_DEFAULT_VALUE;
+    subtitleEditInput.style.left = `${Math.min(
+      Math.max(clientPoint.x - width / 2, bounds.left + 12),
+      bounds.right - width - 12
+    )}px`;
+    subtitleEditInput.style.top = `${clientPoint.y - Math.max(18, node.height / 2)}px`;
+    subtitleEditInput.style.width = `${width}px`;
+    subtitleEditInput.style.fontSize = `${Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE}px`;
+    subtitleEditInput.style.fontWeight = String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT);
+    subtitleEditInput.style.color = clip.fill || TEXT_CLIP_DEFAULT_COLOR;
+    subtitleEditInput.hidden = false;
+    subtitleEditInput.focus();
+    subtitleEditInput.select();
+  }
+
+  function finishSubtitleEditing({ commit = true } = {}) {
+    if (commit && selectedTextClip && !subtitleEditInput.hidden) {
+      selectedTextClip.text = subtitleEditInput.value || TEXT_CLIP_DEFAULT_VALUE;
+      renderTimelineClipTracks();
+      updateTextOverlayPosition();
+      drawEditorTimeline();
+      app.render();
+    }
+
+    subtitleEditInput.hidden = true;
+  }
+
+  function handleSubtitleEditKeyDown(event) {
+    if (event.key === "Enter") {
+      finishSubtitleEditing();
+    } else if (event.key === "Escape") {
+      finishSubtitleEditing({ commit: false });
+    }
+  }
+
+  function handleDocumentPointerDown(event) {
+    if (skipNextSubtitleMenuDocumentPointerDown) {
+      skipNextSubtitleMenuDocumentPointerDown = false;
+      return;
+    }
+
+    if (
+      !subtitleContextMenu.hidden &&
+      event.target !== subtitleContextMenu &&
+      !subtitleContextMenu.contains(event.target)
+    ) {
+      hideSubtitleContextMenu();
+    }
+  }
+
+  function handleCanvasContextMenu(event) {
+    event.preventDefault();
+  }
+
+  function handleCanvasDoubleClick(event) {
+    const clip = getTextClipAtCanvasEvent(event);
+
+    if (!clip) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    textDragging = false;
+    suppressNextCanvasToggle = true;
+    hideSubtitleContextMenu();
+    finishSubtitleEditing();
+    selectTimelineClip("text", clip);
+    selectedTextClip = clip;
+    updateTextOverlayPosition();
+    startSubtitleEditing(clip);
+    app.render();
+  }
+
+  function getClientPointFromPixiEvent(event) {
+    const global = event.global || { x: getPreviewWidth() / 2, y: getPreviewHeight() / 2 };
+
+    return getClientPointFromCanvasPoint(global.x, global.y);
+  }
+
+  function getClientPointFromCanvasPoint(x, y) {
+    const bounds = canvas.getBoundingClientRect();
+
+    return {
+      x: bounds.left + (x / getPreviewWidth()) * bounds.width,
+      y: bounds.top + (y / getPreviewHeight()) * bounds.height,
+    };
+  }
+
+  function normalizeHexColor(value) {
+    return /^#[0-9a-f]{6}$/i.test(value) ? value : TEXT_CLIP_DEFAULT_COLOR;
   }
 
   function handleImagePointerDown(event) {
@@ -3968,40 +4753,7 @@ export async function startPixiMedia() {
   }
 
   function handleSubtitleClick() {
-    applySubtitleControls();
-    textOverlayIntervals = [
-      {
-        duration: TEXT_OVERLAY_DEFAULT_DURATION,
-        startTime: getCurrentPlaybackTime(),
-      },
-    ];
-    textPositionInitialized = false;
-    updateTextOverlayPosition();
-    app.render();
-  }
-
-  function handleSubtitleControlChange() {
-    applySubtitleControls();
-    updateTextOverlayPosition();
-    app.render();
-  }
-
-  function applySubtitleControls() {
-    const fontSize = Number(subtitleSizeSelect.value) || 42;
-    const fontStyleValue = subtitleStyleSelect.value;
-    const isItalic = fontStyleValue.includes("Italic");
-    const isBold = fontStyleValue.includes("Bold");
-
-    overlayText.text = subtitleTextInput.value || TEXT_OVERLAY_VALUE;
-    overlayText.style.fontSize = fontSize;
-    overlayText.style.fontFamily = `${subtitleFontSelect.value}, system-ui, sans-serif`;
-    overlayText.style.fontStyle = isItalic ? "italic" : "normal";
-    overlayText.style.fontWeight = isBold ? "800" : "400";
-    overlayText.style.fill = subtitleColorInput.value;
-    overlayText.style.stroke = {
-      color: "rgba(0, 0, 0, 0.82)",
-      width: Math.max(4, Math.round(fontSize * 0.16)),
-    };
+    addTextTimelineClip();
   }
 
   function isPointerInEditorPanel() {
@@ -4035,6 +4787,51 @@ export async function startPixiMedia() {
     });
   }
 
+  function isPointerInTextOverlay(event) {
+    if (!event || currentKind !== "video") {
+      return false;
+    }
+
+    return Boolean(getTextClipAtCanvasEvent(event));
+  }
+
+  function getTextClipAtCanvasEvent(event) {
+    if (!event || currentKind !== "video") {
+      return null;
+    }
+
+    const rect = getMediaSpriteRect();
+
+    if (!rect) {
+      return null;
+    }
+
+    const canvasPoint = getCanvasPoint(event);
+    const activeClips = getActiveTextTimelineClips();
+
+    for (let index = activeClips.length - 1; index >= 0; index -= 1) {
+      const clip = activeClips[index];
+      const node = clip.overlayNode;
+
+      if (!node) {
+        continue;
+      }
+
+      const padding = 4;
+      const inBounds =
+        canvasPoint.x >= node.x - node.width / 2 - padding &&
+        canvasPoint.x <= node.x + node.width / 2 + padding &&
+        canvasPoint.y >= node.y - node.height / 2 - padding &&
+        canvasPoint.y <= node.y + node.height / 2 + padding;
+
+      if (inBounds) {
+        return clip;
+      }
+    }
+
+    return null;
+  }
+
   function getCanvasPoint(event) {
     const bounds = canvas.getBoundingClientRect();
 
@@ -4052,7 +4849,9 @@ export async function startPixiMedia() {
 
     if (
       currentKind === "video" &&
-      (isPointerInEditorPanel(event) || isPointerInImageOverlay(event))
+      (isPointerInEditorPanel(event) ||
+        isPointerInImageOverlay(event) ||
+        isPointerInTextOverlay(event))
     ) {
       return;
     }
@@ -4092,13 +4891,16 @@ export async function startPixiMedia() {
 
   chooseButton.addEventListener("click", handleChooseClick);
   subtitleButton.addEventListener("click", handleSubtitleClick);
-  subtitleTextInput.addEventListener("input", handleSubtitleControlChange);
-  subtitleSizeSelect.addEventListener("change", handleSubtitleControlChange);
-  subtitleFontSelect.addEventListener("change", handleSubtitleControlChange);
-  subtitleStyleSelect.addEventListener("change", handleSubtitleControlChange);
-  subtitleColorInput.addEventListener("input", handleSubtitleControlChange);
+  subtitleColorInput.addEventListener("input", handleSubtitleStyleChange);
+  subtitleSizeInput.addEventListener("input", handleSubtitleStyleChange);
+  subtitleWeightSelect.addEventListener("change", handleSubtitleStyleChange);
+  subtitleEditInput.addEventListener("blur", finishSubtitleEditing);
+  subtitleEditInput.addEventListener("keydown", handleSubtitleEditKeyDown);
   exportButton.addEventListener("click", handleExportClick);
   input.addEventListener("change", handleInputChange);
+  canvas.addEventListener("contextmenu", handleCanvasContextMenu);
+  canvas.addEventListener("dblclick", handleCanvasDoubleClick);
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   timelineCanvas.addEventListener("wheel", handleTimelineWheel, { passive: false });
   window.addEventListener("resize", resizeCanvas);
   timeline.on("pointerdown", handleTimelinePointerDown);
@@ -4130,10 +4932,9 @@ export async function startPixiMedia() {
     handle.node.on("pointerupoutside", handleImagePointerUp);
     handle.node.on("globalpointermove", handleImagePointerMove);
   });
-  overlayText.on("pointerdown", handleTextPointerDown);
-  overlayText.on("pointerup", handleTextPointerUp);
-  overlayText.on("pointerupoutside", handleTextPointerUp);
-  overlayText.on("globalpointermove", handleTextPointerMove);
+  textOverlayLayer.on("pointerup", handleTextPointerUp);
+  textOverlayLayer.on("pointerupoutside", handleTextPointerUp);
+  textOverlayLayer.on("globalpointermove", handleTextPointerMove);
   app.ticker.add(renderScene);
 
   resizeCanvas();
@@ -4143,18 +4944,23 @@ export async function startPixiMedia() {
     document.body.classList.remove("pixi-media-page");
     chooseButton.removeEventListener("click", handleChooseClick);
     subtitleButton.removeEventListener("click", handleSubtitleClick);
-    subtitleTextInput.removeEventListener("input", handleSubtitleControlChange);
-    subtitleSizeSelect.removeEventListener("change", handleSubtitleControlChange);
-    subtitleFontSelect.removeEventListener("change", handleSubtitleControlChange);
-    subtitleStyleSelect.removeEventListener("change", handleSubtitleControlChange);
-    subtitleColorInput.removeEventListener("input", handleSubtitleControlChange);
+    subtitleColorInput.removeEventListener("input", handleSubtitleStyleChange);
+    subtitleSizeInput.removeEventListener("input", handleSubtitleStyleChange);
+    subtitleWeightSelect.removeEventListener("change", handleSubtitleStyleChange);
+    subtitleEditInput.removeEventListener("blur", finishSubtitleEditing);
+    subtitleEditInput.removeEventListener("keydown", handleSubtitleEditKeyDown);
     exportButton.removeEventListener("click", handleExportClick);
     exportButton.remove();
     subtitleButton.remove();
-    subtitleControls.remove();
+    subtitleContextMenu.remove();
+    subtitleEditInput.remove();
+    performanceStats.remove();
     toolbarLeft.remove();
     toolbarRight.remove();
     input.removeEventListener("change", handleInputChange);
+    canvas.removeEventListener("contextmenu", handleCanvasContextMenu);
+    canvas.removeEventListener("dblclick", handleCanvasDoubleClick);
+    document.removeEventListener("pointerdown", handleDocumentPointerDown);
     timelineCanvas.removeEventListener("wheel", handleTimelineWheel);
     window.removeEventListener("resize", resizeCanvas);
     input.remove();
@@ -4184,10 +4990,9 @@ export async function startPixiMedia() {
     overlayImageHandles.forEach((handle) => {
       handle.node.removeAllListeners();
     });
-    overlayText.off("pointerdown", handleTextPointerDown);
-    overlayText.off("pointerup", handleTextPointerUp);
-    overlayText.off("pointerupoutside", handleTextPointerUp);
-    overlayText.off("globalpointermove", handleTextPointerMove);
+    textOverlayLayer.off("pointerup", handleTextPointerUp);
+    textOverlayLayer.off("pointerupoutside", handleTextPointerUp);
+    textOverlayLayer.off("globalpointermove", handleTextPointerMove);
     app.ticker.remove(renderScene);
     app.destroy(false);
     timelineApp.destroy(false);
@@ -4223,6 +5028,16 @@ function createSelect(label, values, selectedValue) {
   return select;
 }
 
+function createFieldLabel(text, field) {
+  const label = document.createElement("label");
+  const labelText = document.createElement("span");
+
+  labelText.textContent = text;
+  label.append(labelText, field);
+
+  return label;
+}
+
 function getOverlayTransitionAtTime(time, intervals, transitionSeconds) {
   let progress = 0;
 
@@ -4242,7 +5057,7 @@ function getOverlayTransitionAtTime(time, intervals, transitionSeconds) {
 
   return {
     alpha: progress,
-    yScale: Math.cos((1 - progress) * (Math.PI / 2)),
+    axisScale: Math.cos((1 - progress) * (Math.PI / 2)),
   };
 }
 
