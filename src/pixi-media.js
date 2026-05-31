@@ -503,6 +503,7 @@ export async function startPixiMedia() {
   let imageTimelineClips = [];
   let textTimelineClips = [];
   let timelineObjectUrls = [];
+  let mediaLoadRequestId = 0;
   let timelineEditableDuration = 1;
   let videoTrackLoading = false;
   let editorTimelineRulerDuration = -1;
@@ -640,21 +641,32 @@ export async function startPixiMedia() {
       return;
     }
 
+    const loadRequestId = mediaLoadRequestId + 1;
+
+    mediaLoadRequestId = loadRequestId;
     clearCurrentMedia();
 
-    objectUrl = URL.createObjectURL(file);
+    const nextObjectUrl = URL.createObjectURL(file);
+
+    objectUrl = nextObjectUrl;
     fileName.textContent = file.name;
     statusText.textContent = "Loading";
 
     try {
+      let loaded = false;
+
       if (kind === "image") {
-        await loadImage(file);
+        loaded = await loadImage(file, nextObjectUrl, loadRequestId);
       } else if (kind === "video") {
-        await loadVideo(file);
+        loaded = await loadVideo(file, nextObjectUrl, loadRequestId);
       } else if (kind === "audio") {
-        await loadAudio(file);
+        loaded = await loadAudio(file, nextObjectUrl, loadRequestId);
       } else {
         throw new Error("Unsupported file type.");
+      }
+
+      if (!loaded || !isActiveMediaLoad(loadRequestId)) {
+        return;
       }
 
       titleText.visible = false;
@@ -662,6 +674,10 @@ export async function startPixiMedia() {
       resizeCanvas();
       app.render();
     } catch (error) {
+      if (!isActiveMediaLoad(loadRequestId)) {
+        return;
+      }
+
       clearCurrentMedia();
       titleText.visible = true;
       detailText.visible = true;
@@ -672,32 +688,63 @@ export async function startPixiMedia() {
     }
   }
 
-  async function loadImage(file) {
-    mediaTexture = await Assets.load({
-      src: objectUrl,
+  function isActiveMediaLoad(loadRequestId) {
+    return loadRequestId === mediaLoadRequestId;
+  }
+
+  async function loadImage(file, sourceUrl, loadRequestId) {
+    const texture = await Assets.load({
+      src: sourceUrl,
       parser: "texture",
       data: { mime: file.type },
     });
+
+    if (!isActiveMediaLoad(loadRequestId)) {
+      texture.destroy(true);
+      return false;
+    }
+
+    mediaTexture = texture;
     mediaSprite = new Sprite({ texture: mediaTexture });
     mediaSprite.anchor.set(0.5);
     mediaLayer.addChild(mediaSprite);
     currentKind = "image";
     statusText.textContent = "Image loaded";
+
+    return true;
   }
 
-  async function loadVideo(file) {
+  async function loadVideo(file, sourceUrl, loadRequestId) {
     const video = document.createElement("video");
+    let provider = null;
 
     video.loop = false;
     video.playsInline = true;
     video.preload = "auto";
-    video.src = objectUrl;
+    video.src = sourceUrl;
+
+    try {
+      provider = await createMediabunnyVideoFrameProvider(file);
+      await provider.drawFrameAt(0);
+      await waitForMediaReady(video, "loadedmetadata", "video");
+    } catch (error) {
+      provider?.dispose();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      throw error;
+    }
+
+    if (!isActiveMediaLoad(loadRequestId)) {
+      provider.dispose();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      return false;
+    }
+
     mediaElement = video;
-
-    videoFrameProvider = await createMediabunnyVideoFrameProvider(file);
-    await videoFrameProvider.drawFrameAt(0);
-    await waitForMediaReady(video, "loadedmetadata", "video");
-
+    videoFrameProvider = provider;
     mediaTexture = Texture.from(videoFrameProvider.canvas, true);
     mediaTexture.dynamic = true;
     mediaTexture.source.update();
@@ -725,23 +772,41 @@ export async function startPixiMedia() {
     statusText.textContent = `Video ${videoFrameProvider.width}x${videoFrameProvider.height}`;
     startVideoTrackBuild();
     statusText.textContent = "Click canvas to play";
+
+    return true;
   }
 
-  async function loadAudio(file) {
-    mediaElement = new Audio(objectUrl);
-    mediaElement.loop = false;
-    mediaElement.preload = "auto";
-    await waitForMediaReady(mediaElement, "loadedmetadata", "audio");
+  async function loadAudio(file, sourceUrl, loadRequestId) {
+    const audio = new Audio(sourceUrl);
+
+    audio.loop = false;
+    audio.preload = "auto";
+    await waitForMediaReady(audio, "loadedmetadata", "audio");
+
+    if (!isActiveMediaLoad(loadRequestId)) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      return false;
+    }
 
     audioContext = audioContext || new AudioContext();
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
 
+    if (!isActiveMediaLoad(loadRequestId)) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      return false;
+    }
+
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 128;
     analyser.smoothingTimeConstant = 0.82;
     frequencyData = new Uint8Array(analyser.frequencyBinCount);
+    mediaElement = audio;
     audioSource = audioContext.createMediaElementSource(mediaElement);
     audioSource.connect(analyser);
     analyser.connect(audioContext.destination);
@@ -749,6 +814,8 @@ export async function startPixiMedia() {
     statusText.textContent = "Click canvas to play";
     mediaElement.addEventListener("seeked", handleMediaSeeked);
     mediaElement.addEventListener("ended", handleMediaEnded);
+
+    return true;
   }
 
   function hasPrimaryVideoTrack() {
@@ -774,6 +841,7 @@ export async function startPixiMedia() {
         audioElement: video,
         duration: provider.duration,
         file,
+        mediaUrl: url,
         provider,
         sourceDuration: provider.duration,
         sourceOffset: 0,
@@ -805,12 +873,22 @@ export async function startPixiMedia() {
     timelineObjectUrls.push(url);
     audio.loop = false;
     audio.preload = "auto";
-    await waitForMediaReady(audio, "loadedmetadata", "audio");
+
+    try {
+      await waitForMediaReady(audio, "loadedmetadata", "audio");
+    } catch (error) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      revokeTimelineObjectUrl(url);
+      throw error;
+    }
 
     const clip = {
       audioElement: audio,
       duration: Number.isFinite(audio.duration) ? audio.duration : 0,
       file,
+      mediaUrl: url,
       sourceDuration: Number.isFinite(audio.duration) ? audio.duration : 0,
       sourceOffset: 0,
       startTime: getInsertionTime(),
@@ -834,15 +912,26 @@ export async function startPixiMedia() {
 
   async function addImageTimelineClip(file) {
     const url = URL.createObjectURL(file);
-    const texture = await Assets.load({
-      src: url,
-      parser: "texture",
-      data: { mime: file.type },
-    });
-    const imageElement = await loadImageElement(url);
+    let texture = null;
+    let imageElement = null;
+
+    try {
+      texture = await Assets.load({
+        src: url,
+        parser: "texture",
+        data: { mime: file.type },
+      });
+      imageElement = await loadImageElement(url);
+    } catch (error) {
+      texture?.destroy(true);
+      URL.revokeObjectURL(url);
+      throw error;
+    }
+
     const clip = {
       duration: IMAGE_CLIP_DEFAULT_DURATION,
       imageElement,
+      mediaUrl: url,
       startTime: getInsertionTime(),
       texture,
       trackIndex: getNextTrackIndex(imageTimelineClips),
@@ -3994,17 +4083,23 @@ export async function startPixiMedia() {
     };
 
     if (type === "video") {
+      const audioElement = await createTimelineMediaElement("video", clip.file);
+
       return {
         ...baseClip,
-        audioElement: await createTimelineMediaElement("video", clip.file),
+        audioElement,
+        mediaUrl: audioElement.__timelineObjectUrl,
         provider: clip.provider,
       };
     }
 
     if (type === "audio") {
+      const audioElement = await createTimelineMediaElement("audio", clip.file);
+
       return {
         ...baseClip,
-        audioElement: await createTimelineMediaElement("audio", clip.file),
+        audioElement,
+        mediaUrl: audioElement.__timelineObjectUrl,
         samples: clip.samples,
       };
     }
@@ -4034,6 +4129,7 @@ export async function startPixiMedia() {
     const element = type === "video" ? document.createElement("video") : new Audio();
 
     timelineObjectUrls.push(url);
+    element.__timelineObjectUrl = url;
     element.loop = false;
     element.preload = "auto";
     element.src = url;
@@ -4042,8 +4138,16 @@ export async function startPixiMedia() {
       element.playsInline = true;
     }
 
-    await waitForMediaReady(element, "loadedmetadata", type);
-    element.pause();
+    try {
+      await waitForMediaReady(element, "loadedmetadata", type);
+      element.pause();
+    } catch (error) {
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+      revokeTimelineObjectUrl(url);
+      throw error;
+    }
 
     return element;
   }
@@ -4068,6 +4172,7 @@ export async function startPixiMedia() {
         if (clip.audioElement !== mediaElement) {
           clip.audioElement.removeAttribute("src");
           clip.audioElement.load();
+          revokeTimelineObjectUrl(clip.mediaUrl || clip.audioElement.__timelineObjectUrl);
         }
       }
     }
@@ -4080,6 +4185,25 @@ export async function startPixiMedia() {
     ) {
       clip.provider.dispose();
     }
+
+    if (type === "image") {
+      if (clip.texture && !isTimelineResourceShared("texture", clip.texture)) {
+        clip.texture.destroy(true);
+      }
+
+      if (clip.mediaUrl && !isTimelineResourceShared("mediaUrl", clip.mediaUrl)) {
+        revokeTimelineObjectUrl(clip.mediaUrl);
+      }
+    }
+  }
+
+  function revokeTimelineObjectUrl(url) {
+    if (!url) {
+      return;
+    }
+
+    URL.revokeObjectURL(url);
+    timelineObjectUrls = timelineObjectUrls.filter((item) => item !== url);
   }
 
   function isTimelineResourceShared(key, value) {
