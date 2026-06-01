@@ -13,7 +13,6 @@ import {
   exportTimelineComposition,
   extractVideoFramesWithMediabunny,
 } from "./util.js";
-import fogImageUrl from "./assets/fog.jpg";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 660;
@@ -21,10 +20,15 @@ const HEADER_HEIGHT = 60;
 const MEDIA_PADDING = 12;
 const PREVIEW_HEIGHT = Math.round(VIEW_HEIGHT * 0.8);
 const TIMELINE_PANEL_HEIGHT = VIEW_HEIGHT - PREVIEW_HEIGHT;
+const TIMELINE_PANEL_MIN_RATIO = 0.2;
+const TIMELINE_PANEL_MAX_RATIO = 0.6;
+const TIMELINE_SPLITTER_HEIGHT = 8;
+const PREVIEW_MIN_HEIGHT = 180;
 const BAR_COUNT = 48;
 const TIMELINE_X = MEDIA_PADDING + 72;
 const TIMELINE_HEIGHT = 3;
 const TIMELINE_HIT_HEIGHT = 42;
+const TIMELINE_KNOB_SIZE = 20;
 const PREVIEW_CONTROL_HEIGHT = 34;
 const PREVIEW_CONTROL_GAP = 10;
 const PREVIEW_MEDIA_CONTROL_GAP = 12;
@@ -36,14 +40,13 @@ const EDITOR_PANEL_X = 0;
 const EDITOR_PANEL_Y = PREVIEW_HEIGHT;
 const EDITOR_PANEL_HEADER_HEIGHT = 26;
 const TRACK_LABEL_WIDTH = 76;
-const TRACK_ROW_HEIGHT = 60;
 const TRACK_ROW_GAP = 8;
 const RULER_TRACK_GAP = 10;
 const RULER_LABEL_HEIGHT = 16;
-const VIDEO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
-const AUDIO_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
-const IMAGE_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
-const TEXT_TRACK_HEIGHT = TRACK_ROW_HEIGHT;
+const VIDEO_TRACK_HEIGHT = 32;
+const AUDIO_TRACK_HEIGHT = 28;
+const IMAGE_TRACK_HEIGHT = 28;
+const TEXT_TRACK_HEIGHT = 28;
 const VIDEO_THUMB_WIDTH = 92;
 const VIDEO_THUMB_HEIGHT = VIDEO_TRACK_HEIGHT - 8;
 const TIMELINE_PIXELS_PER_SECOND = 10;
@@ -66,6 +69,7 @@ const TEXT_CLIP_DEFAULT_FONT_WEIGHT = "400";
 const TEXT_CLIP_BOTTOM_MARGIN = 12;
 const TIMELINE_TEXT_LABEL_FONT = "700 12px Inter, system-ui, sans-serif";
 const TIMELINE_TEXT_LABEL_PADDING = 20;
+const TIME_TEXT_FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
 const IMAGE_OVERLAY_MIN_WIDTH = 48;
 const IMAGE_OVERLAY_HANDLE_RADIUS = 8;
 const OVERLAY_FADE_SECONDS = 0.35;
@@ -91,6 +95,7 @@ export async function startPixiMedia() {
   const statusText = document.getElementById("status-text");
   const chooseButton = document.getElementById("shuffle-button");
   const hud = document.getElementById("hud");
+  const gameShell = canvas?.closest("#game-shell");
   const fileLabel = fileName?.closest("span")?.firstChild;
 
   if (!(canvas instanceof HTMLCanvasElement)) {
@@ -101,7 +106,8 @@ export async function startPixiMedia() {
     !(fileName instanceof HTMLElement) ||
     !(statusText instanceof HTMLElement) ||
     !(chooseButton instanceof HTMLButtonElement) ||
-    !(hud instanceof HTMLElement)
+    !(hud instanceof HTMLElement) ||
+    !(gameShell instanceof HTMLElement)
   ) {
     throw new Error("Media viewer HUD elements were not found.");
   }
@@ -187,7 +193,14 @@ export async function startPixiMedia() {
 
   const timelineCanvas = document.createElement("canvas");
   timelineCanvas.id = "timeline-canvas";
-  canvas.insertAdjacentElement("afterend", timelineCanvas);
+  const timelineSplitter = document.createElement("div");
+  timelineSplitter.className = "media-timeline-splitter";
+  timelineSplitter.role = "separator";
+  timelineSplitter.tabIndex = 0;
+  timelineSplitter.ariaLabel = "调整时间线高度";
+  timelineSplitter.ariaOrientation = "horizontal";
+  canvas.insertAdjacentElement("afterend", timelineSplitter);
+  timelineSplitter.insertAdjacentElement("afterend", timelineCanvas);
 
   const app = new Application();
   const timelineApp = new Application();
@@ -214,9 +227,6 @@ export async function startPixiMedia() {
   timelineApp.stop();
   maintainCanvasLayout();
 
-  const overlayImageTexture = await Assets.load(fogImageUrl);
-  const overlayImageElement = await loadImageElement(fogImageUrl);
-
   const scene = new Container();
   const timelineScene = new Container();
   const mediaLayer = new Container();
@@ -225,7 +235,7 @@ export async function startPixiMedia() {
   const textOverlayLayer = new Container();
   const overlayImageExtras = new Container();
   const overlayImageGroup = new Container();
-  const overlayImageSprite = new Sprite({ texture: overlayImageTexture });
+  const overlayImageSprite = new Sprite();
   const overlayImageHandles = ["tl", "tr", "br", "bl"].map((corner) => ({
     corner,
     node: createImageResizeHandle(corner),
@@ -326,7 +336,7 @@ export async function startPixiMedia() {
     text: "00:00.000",
     style: {
       fill: "#e2e8f0",
-      fontFamily: "Inter, system-ui, sans-serif",
+      fontFamily: TIME_TEXT_FONT_FAMILY,
       fontSize: 13,
       fontWeight: "600",
     },
@@ -335,7 +345,7 @@ export async function startPixiMedia() {
     text: "00:00.000",
     style: {
       fill: "#94a3b8",
-      fontFamily: "Inter, system-ui, sans-serif",
+      fontFamily: TIME_TEXT_FONT_FAMILY,
       fontSize: 13,
       fontWeight: "600",
     },
@@ -447,26 +457,38 @@ export async function startPixiMedia() {
   editorTimelineAudioLabel.visible = false;
   editorTimelineAudioLabel.position.set(
     EDITOR_PANEL_X + 14,
-    getVideoTrackY() + getTrackPitch() + AUDIO_TRACK_HEIGHT / 2
+    getVideoTrackY() + VIDEO_TRACK_HEIGHT + TRACK_ROW_GAP + AUDIO_TRACK_HEIGHT / 2
   );
   editorTimelineImageLabel.anchor.set(0, 0.5);
   editorTimelineImageLabel.visible = false;
   editorTimelineImageLabel.position.set(
     EDITOR_PANEL_X + 14,
-    getVideoTrackY() + getTrackPitch() * 2 + IMAGE_TRACK_HEIGHT / 2
+    getVideoTrackY() +
+      VIDEO_TRACK_HEIGHT +
+      TRACK_ROW_GAP +
+      AUDIO_TRACK_HEIGHT +
+      TRACK_ROW_GAP +
+      IMAGE_TRACK_HEIGHT / 2
   );
   editorTimelineTextLabel.anchor.set(0, 0.5);
   editorTimelineTextLabel.visible = false;
   editorTimelineTextLabel.position.set(
     EDITOR_PANEL_X + 14,
-    getVideoTrackY() + getTrackPitch() * 3 + TEXT_TRACK_HEIGHT / 2
+    getVideoTrackY() +
+      VIDEO_TRACK_HEIGHT +
+      TRACK_ROW_GAP +
+      AUDIO_TRACK_HEIGHT +
+      TRACK_ROW_GAP +
+      IMAGE_TRACK_HEIGHT +
+      TRACK_ROW_GAP +
+      TEXT_TRACK_HEIGHT / 2
   );
   editorTimelineStatus.anchor.set(0.5, 0.5);
   editorTimelineStatus.position.set(getEditorPlayheadX(), EDITOR_PANEL_Y + 14);
 
   titleText.anchor.set(0.5);
   detailText.anchor.set(0.5);
-  textOverlayLayer.eventMode = "static";
+  textOverlayLayer.eventMode = "passive";
   textOverlayLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
   overlayImageLayer.eventMode = "static";
   overlayImageLayer.hitArea = new Rectangle(0, 0, getPreviewWidth(), getPreviewHeight());
@@ -514,6 +536,10 @@ export async function startPixiMedia() {
   let timelineClipDrag = null;
   let timelineClipDragFrame = 0;
   let pendingTimelineClipDragEvent = null;
+  let timelinePanelHeightPx = null;
+  let timelinePanelResizeDrag = null;
+  let timelinePanelResizeFrame = 0;
+  let pendingTimelinePanelHeightPx = null;
   let selectedTimelineClip = null;
   let selectedTextClip = null;
   let textDragging = false;
@@ -535,7 +561,11 @@ export async function startPixiMedia() {
   };
   const timelineTextMeasureContext = document.createElement("canvas").getContext("2d");
 
-  function clearCurrentMedia() {
+  function clearCurrentMedia({ invalidateLoads = false } = {}) {
+    if (invalidateLoads) {
+      mediaLoadRequestId += 1;
+    }
+
     app.stop();
     playbackTime = 0;
     playbackPlaying = false;
@@ -557,6 +587,7 @@ export async function startPixiMedia() {
     isExporting = false;
     selectedTextClip = null;
     textDragging = false;
+    textOverlayLayer.eventMode = "passive";
     hideSubtitleContextMenu();
     finishSubtitleEditing({ commit: false });
     clearTextOverlayNodes();
@@ -678,7 +709,7 @@ export async function startPixiMedia() {
         return;
       }
 
-      clearCurrentMedia();
+      clearCurrentMedia({ invalidateLoads: true });
       titleText.visible = true;
       detailText.visible = true;
       fileName.textContent = "none";
@@ -853,7 +884,7 @@ export async function startPixiMedia() {
       updateTimelineEditableDuration();
 
       startVideoTrackClipBuild(clip);
-      drawEditorTimeline();
+      refreshTimelineDurationViews();
       statusText.textContent = "Video appended";
     } catch (error) {
       provider.dispose();
@@ -900,7 +931,7 @@ export async function startPixiMedia() {
     selectTimelineClip("audio", clip);
     updateTimelineEditableDuration();
     renderTimelineClipTracks();
-    drawEditorTimeline();
+    refreshTimelineDurationViews();
     syncTimelineAudio();
     statusText.textContent = "Audio added";
 
@@ -943,7 +974,7 @@ export async function startPixiMedia() {
     updateTimelineEditableDuration();
     renderTimelineClipTracks();
     imagePositionInitialized = false;
-    drawEditorTimeline();
+    refreshTimelineDurationViews();
     statusText.textContent = "Image added";
   }
 
@@ -961,6 +992,7 @@ export async function startPixiMedia() {
       fill: TEXT_CLIP_DEFAULT_COLOR,
       fontFamily: "Inter, system-ui, sans-serif",
       fontSize: TEXT_CLIP_DEFAULT_FONT_SIZE,
+      fontSizeReferenceHeight: rect?.height || PREVIEW_HEIGHT,
       fontStyle: "normal",
       fontWeight: TEXT_CLIP_DEFAULT_FONT_WEIGHT,
       startTime,
@@ -976,10 +1008,16 @@ export async function startPixiMedia() {
     updateTimelineEditableDuration();
     renderTimelineClipTracks();
     updateTextOverlayPosition();
-    drawTimeline();
-    drawEditorTimeline();
+    refreshTimelineDurationViews();
     app.render();
     statusText.textContent = "Subtitle added";
+  }
+
+  function refreshTimelineDurationViews() {
+    clearEditorTimelineRuler();
+    drawTimeline();
+    drawEditorTimeline();
+    timelineApp.render();
   }
 
   function fitMediaSprite() {
@@ -1220,19 +1258,29 @@ export async function startPixiMedia() {
   }
 
   function getAudioTrackY(trackIndex = 0) {
-    return getVideoTrackY() + TRACK_ROW_HEIGHT + TRACK_ROW_GAP + trackIndex * getTrackPitch();
+    return (
+      getVideoTrackY() + VIDEO_TRACK_HEIGHT + TRACK_ROW_GAP + trackIndex * getTrackPitch("audio")
+    );
   }
 
   function getImageTrackY(trackIndex = 0) {
-    return getAudioTrackY(getAudioTrackCount()) + trackIndex * getTrackPitch();
+    return (
+      getAudioTrackY(0) +
+      getAudioTrackCount() * getTrackPitch("audio") +
+      trackIndex * getTrackPitch("image")
+    );
   }
 
   function getTextTrackY(trackIndex = 0) {
-    return getImageTrackY(getImageTrackCount()) + trackIndex * getTrackPitch();
+    return (
+      getImageTrackY(0) +
+      getImageTrackCount() * getTrackPitch("image") +
+      trackIndex * getTrackPitch("text")
+    );
   }
 
-  function getTrackPitch() {
-    return TRACK_ROW_HEIGHT + TRACK_ROW_GAP;
+  function getTrackPitch(type = "audio") {
+    return getTimelineClipHeight(type) + TRACK_ROW_GAP;
   }
 
   function drawCanvasIntoPreview(sourceCanvas) {
@@ -1532,7 +1580,7 @@ export async function startPixiMedia() {
   function createSubtitleTextNode(clip, rect) {
     const textNode = new Text({
       text: clip.text || TEXT_CLIP_DEFAULT_VALUE,
-      style: getSubtitleTextStyle(clip, rect.width),
+      style: getSubtitleTextStyle(clip, rect),
     });
 
     textNode.anchor.set(0.5);
@@ -1544,7 +1592,7 @@ export async function startPixiMedia() {
     textNode.cursor = textDragging && selectedTextClip === clip ? "grabbing" : "grab";
     textNode.timelineClip = clip;
     textNode.on("pointerdown", (event) => handleTextPointerDown(clip, event));
-    clampTextClipToMediaRect(clip, textNode, rect);
+    clampTextClipToMediaRect(clip, textNode, rect, { persist: false });
     applyTextClipTransition(textNode, clip);
     textNode.hitArea = new Rectangle(
       -textNode.width / 2,
@@ -1566,8 +1614,9 @@ export async function startPixiMedia() {
     textNode.visible = transition.alpha > 0;
   }
 
-  function getSubtitleTextStyle(clip, wordWrapWidth = getMediaSpriteRect()?.width || VIEW_WIDTH) {
-    const fontSize = Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE;
+  function getSubtitleTextStyle(clip, rect = getMediaSpriteRect()) {
+    const wordWrapWidth = rect?.width || VIEW_WIDTH;
+    const fontSize = getRenderedSubtitleFontSize(clip, rect);
 
     return {
       align: "center",
@@ -1582,10 +1631,22 @@ export async function startPixiMedia() {
     };
   }
 
+  function getRenderedSubtitleFontSize(clip, rect = getMediaSpriteRect()) {
+    const baseFontSize = Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE;
+    const referenceHeight = Number(clip.fontSizeReferenceHeight) || rect?.height || PREVIEW_HEIGHT;
+
+    if (!rect || referenceHeight <= 0) {
+      return baseFontSize;
+    }
+
+    return Math.max(1, baseFontSize * (rect.height / referenceHeight));
+  }
+
   function clampTextClipToMediaRect(
     clip,
     textNode = clip.overlayNode,
-    rect = getMediaSpriteRect()
+    rect = getMediaSpriteRect(),
+    { persist = true } = {}
   ) {
     if (!rect || !textNode) {
       return;
@@ -1597,8 +1658,10 @@ export async function startPixiMedia() {
     const y = Math.min(Math.max(textNode.y, rect.top + halfHeight), rect.bottom - halfHeight);
 
     textNode.position.set(x, y);
-    clip.xRatio = (x - rect.left) / rect.width;
-    clip.yRatio = (y - rect.top) / rect.height;
+    if (persist) {
+      clip.xRatio = (x - rect.left) / rect.width;
+      clip.yRatio = (y - rect.top) / rect.height;
+    }
   }
 
   function getDefaultTextClipYRatio(rect) {
@@ -1647,20 +1710,22 @@ export async function startPixiMedia() {
 
   function getOverlayImageAspectRatio(clip = getActiveImageTimelineClip()) {
     const activeClip = clip;
-    const texture = activeClip?.texture || overlayImageTexture;
-    const element = activeClip?.imageElement || overlayImageElement;
-    const width = texture.width || element.naturalWidth || 1;
-    const height = texture.height || element.naturalHeight || 1;
+    const texture = activeClip?.texture;
+    const element = activeClip?.imageElement;
+    const width = texture?.width || element?.naturalWidth || 1;
+    const height = texture?.height || element?.naturalHeight || 1;
 
     return width / height;
   }
 
   function getImageClipFrame(clip, rect) {
-    if (!clip.imageFrame) {
-      clip.imageFrame = getDefaultImageFrame(rect, clip);
+    if (!clip.imageFrameRatio) {
+      clip.imageFrameRatio = clip.imageFrame
+        ? getImageFrameRatioFromFrame(clip.imageFrame, rect)
+        : getDefaultImageFrameRatio(rect, clip);
     }
 
-    return clip.imageFrame;
+    return getImageFrameFromRatio(clip.imageFrameRatio, rect, clip);
   }
 
   function getDefaultImageFrame(rect, clip) {
@@ -1683,14 +1748,46 @@ export async function startPixiMedia() {
     };
   }
 
+  function getDefaultImageFrameRatio(rect, clip) {
+    return getImageFrameRatioFromFrame(getDefaultImageFrame(rect, clip), rect);
+  }
+
+  function getImageFrameRatioFromFrame(frame, rect) {
+    return {
+      heightRatio: frame.height / rect.height,
+      widthRatio: frame.width / rect.width,
+      xRatio: (frame.x - rect.left) / rect.width,
+      yRatio: (frame.y - rect.top) / rect.height,
+    };
+  }
+
+  function getImageFrameFromRatio(ratio, rect, clip) {
+    const aspectRatio = getOverlayImageAspectRatio(clip);
+    const maxWidth = Math.min(rect.width, rect.height * aspectRatio);
+    const widthRatio = Number(ratio?.widthRatio) || 0.5;
+    const width = Math.min(Math.max(rect.width * widthRatio, 1), maxWidth);
+    const height = width / aspectRatio;
+    const x = rect.left + rect.width * (Number(ratio?.xRatio) || 0);
+    const y = rect.top + rect.height * (Number(ratio?.yRatio) || 0);
+
+    return {
+      height,
+      width,
+      x: Math.min(Math.max(x, rect.left), rect.right - width),
+      y: Math.min(Math.max(y, rect.top), rect.bottom - height),
+    };
+  }
+
   function saveActiveImageFrame() {
     const activeClip = getActiveImageTimelineClip();
+    const rect = getMediaSpriteRect();
 
-    if (!activeClip) {
+    if (!activeClip || !rect) {
       return;
     }
 
     activeClip.imageFrame = { ...imageFrame };
+    activeClip.imageFrameRatio = getImageFrameRatioFromFrame(imageFrame, rect);
   }
 
   function selectImageOverlayClip(clip) {
@@ -2015,9 +2112,9 @@ export async function startPixiMedia() {
 
     timelineKnob.clear();
     timelineKnob
-      .moveTo(knobX, timelineY - 14)
-      .lineTo(knobX, timelineY + 14)
-      .stroke({ color: 0xffffff, width: 3 });
+      .circle(knobX, timelineY, TIMELINE_KNOB_SIZE / 2)
+      .fill(0xffffff)
+      .stroke({ color: 0x111111, alpha: 0.9, width: 2 });
 
     currentTimeText.text = `${formatTime(currentTime)} / ${formatTime(duration)}`;
     currentTimeText.position.set(getPreviewTimecodeX(), timelineY);
@@ -2044,6 +2141,7 @@ export async function startPixiMedia() {
     );
 
     currentTimeText.style.fill = "#f5f5f5";
+    currentTimeText.style.fontFamily = TIME_TEXT_FONT_FAMILY;
     currentTimeText.style.fontSize = 13;
     currentTimeText.anchor.set(0, 0.5);
     currentTimeText.hitArea = new Rectangle(0, 0, PREVIEW_TIMECODE_WIDTH, PREVIEW_CONTROL_HEIGHT);
@@ -2170,9 +2268,9 @@ export async function startPixiMedia() {
     timelineFill.clear();
     timelineKnob.clear();
     timelineKnob
-      .moveTo(timelineX, timelineY - 14)
-      .lineTo(timelineX, timelineY + 14)
-      .stroke({ color: 0xffffff, alpha: 0.45, width: 3 });
+      .circle(timelineX, timelineY, TIMELINE_KNOB_SIZE / 2)
+      .fill({ color: 0xffffff, alpha: 0.45 })
+      .stroke({ color: 0x111111, alpha: 0.45, width: 2 });
 
     currentTimeText.text = `${formatTime(0)} / ${formatTime(0)}`;
     currentTimeText.position.set(getPreviewTimecodeX(), timelineY);
@@ -3094,6 +3192,18 @@ export async function startPixiMedia() {
     return type === "image" ? getImageTrackY(trackIndex) : getTextTrackY(trackIndex);
   }
 
+  function getTimelineTrackCountByType(type) {
+    if (type === "video") {
+      return 1;
+    }
+
+    if (type === "audio") {
+      return getAudioTrackCount();
+    }
+
+    return type === "image" ? getImageTrackCount() : getTextTrackCount();
+  }
+
   function getTimelineClipHeight(type) {
     if (type === "video") {
       return VIDEO_TRACK_HEIGHT;
@@ -3232,7 +3342,6 @@ export async function startPixiMedia() {
 
   function estimateGpuMemoryBytes() {
     const textures = new Set([
-      overlayImageTexture,
       mediaTexture,
       ...videoTrackTextures,
       ...imageTrackTextures,
@@ -3318,6 +3427,7 @@ export async function startPixiMedia() {
 
   function resizeCanvas() {
     maintainCanvasLayout();
+    syncTimelinePanelHeightStyle();
     const bounds = canvas.getBoundingClientRect();
     app.renderer.resize(Math.max(1, bounds.width), Math.max(1, bounds.height));
     scene.scale.set(1);
@@ -3333,6 +3443,7 @@ export async function startPixiMedia() {
     timelineScene.scale.set(timelineScale);
     timelineScene.position.set(0, -PREVIEW_HEIGHT * timelineScale);
     renderScene();
+    layoutActiveSubtitleEditInput();
     app.render();
     timelineApp.render();
     maintainCanvasLayout();
@@ -3343,6 +3454,175 @@ export async function startPixiMedia() {
     canvas.style.height = "100%";
     timelineCanvas.style.width = "100%";
     timelineCanvas.style.height = "100%";
+  }
+
+  function syncTimelinePanelHeightStyle() {
+    const bounds = getTimelinePanelHeightBounds();
+
+    if (timelinePanelHeightPx !== null) {
+      timelinePanelHeightPx = Math.min(Math.max(timelinePanelHeightPx, bounds.min), bounds.max);
+      gameShell.style.setProperty("--media-timeline-height", `${timelinePanelHeightPx}px`);
+    }
+
+    updateTimelineSplitterAccessibility(timelinePanelHeightPx ?? bounds.min, bounds);
+  }
+
+  function getTimelinePanelHeightBounds() {
+    const viewportHeight = Math.max(
+      1,
+      window.innerHeight || document.documentElement.clientHeight || VIEW_HEIGHT
+    );
+    const min = Math.round(viewportHeight * TIMELINE_PANEL_MIN_RATIO);
+    const maxByRatio = Math.round(viewportHeight * TIMELINE_PANEL_MAX_RATIO);
+    const maxByPreview = Math.max(
+      min,
+      viewportHeight - HEADER_HEIGHT - TIMELINE_SPLITTER_HEIGHT - PREVIEW_MIN_HEIGHT
+    );
+
+    return {
+      max: Math.max(min, Math.min(maxByRatio, maxByPreview)),
+      min,
+    };
+  }
+
+  function clampTimelinePanelHeight(value) {
+    const bounds = getTimelinePanelHeightBounds();
+    const height = Number.isFinite(value) ? value : bounds.min;
+
+    return Math.min(Math.max(height, bounds.min), bounds.max);
+  }
+
+  function applyTimelinePanelHeight(value) {
+    timelinePanelHeightPx = clampTimelinePanelHeight(value);
+    gameShell.style.setProperty("--media-timeline-height", `${timelinePanelHeightPx}px`);
+    updateTimelineSplitterAccessibility(timelinePanelHeightPx);
+    resizeCanvas();
+  }
+
+  function requestTimelinePanelHeight(value) {
+    pendingTimelinePanelHeightPx = clampTimelinePanelHeight(value);
+
+    if (timelinePanelResizeFrame) {
+      return;
+    }
+
+    timelinePanelResizeFrame = window.requestAnimationFrame(() => {
+      timelinePanelResizeFrame = 0;
+
+      if (pendingTimelinePanelHeightPx === null) {
+        return;
+      }
+
+      const nextHeight = pendingTimelinePanelHeightPx;
+
+      pendingTimelinePanelHeightPx = null;
+      applyTimelinePanelHeight(nextHeight);
+    });
+  }
+
+  function flushPendingTimelinePanelHeight() {
+    if (!timelinePanelResizeFrame && pendingTimelinePanelHeightPx === null) {
+      return;
+    }
+
+    if (timelinePanelResizeFrame) {
+      window.cancelAnimationFrame(timelinePanelResizeFrame);
+      timelinePanelResizeFrame = 0;
+    }
+
+    const nextHeight = pendingTimelinePanelHeightPx;
+
+    pendingTimelinePanelHeightPx = null;
+
+    if (nextHeight !== null) {
+      applyTimelinePanelHeight(nextHeight);
+    }
+  }
+
+  function updateTimelineSplitterAccessibility(
+    height = timelinePanelHeightPx ?? getTimelinePanelHeightBounds().min,
+    bounds = getTimelinePanelHeightBounds()
+  ) {
+    timelineSplitter.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    timelineSplitter.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+    timelineSplitter.setAttribute(
+      "aria-valuenow",
+      String(Math.round(Math.min(Math.max(height, bounds.min), bounds.max)))
+    );
+  }
+
+  function handleTimelineSplitterPointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+
+    const bounds = getTimelinePanelHeightBounds();
+
+    event.preventDefault();
+    timelinePanelResizeDrag = {
+      pointerId: event.pointerId,
+      startHeight: timelineCanvas.getBoundingClientRect().height || bounds.min,
+      startY: event.clientY,
+    };
+    document.body.classList.add("media-timeline-resizing");
+    timelineSplitter.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", handleTimelineSplitterPointerMove);
+    window.addEventListener("pointerup", handleTimelineSplitterPointerUp);
+    window.addEventListener("pointercancel", handleTimelineSplitterPointerUp);
+  }
+
+  function handleTimelineSplitterPointerMove(event) {
+    if (!timelinePanelResizeDrag) {
+      return;
+    }
+
+    event.preventDefault();
+    requestTimelinePanelHeight(
+      timelinePanelResizeDrag.startHeight + timelinePanelResizeDrag.startY - event.clientY
+    );
+  }
+
+  function handleTimelineSplitterPointerUp(event) {
+    if (!timelinePanelResizeDrag) {
+      return;
+    }
+
+    if (event) {
+      requestTimelinePanelHeight(
+        timelinePanelResizeDrag.startHeight + timelinePanelResizeDrag.startY - event.clientY
+      );
+    }
+
+    timelineSplitter.releasePointerCapture?.(timelinePanelResizeDrag.pointerId);
+    timelinePanelResizeDrag = null;
+    document.body.classList.remove("media-timeline-resizing");
+    window.removeEventListener("pointermove", handleTimelineSplitterPointerMove);
+    window.removeEventListener("pointerup", handleTimelineSplitterPointerUp);
+    window.removeEventListener("pointercancel", handleTimelineSplitterPointerUp);
+
+    flushPendingTimelinePanelHeight();
+  }
+
+  function handleTimelineSplitterKeyDown(event) {
+    const bounds = getTimelinePanelHeightBounds();
+    const currentHeight = timelinePanelHeightPx ?? timelineCanvas.getBoundingClientRect().height;
+    const step = event.shiftKey ? 80 : 24;
+    let nextHeight = currentHeight;
+
+    if (event.key === "ArrowUp") {
+      nextHeight = currentHeight + step;
+    } else if (event.key === "ArrowDown") {
+      nextHeight = currentHeight - step;
+    } else if (event.key === "Home") {
+      nextHeight = bounds.min;
+    } else if (event.key === "End") {
+      nextHeight = bounds.max;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    applyTimelinePanelHeight(nextHeight);
   }
 
   function getFileExtension(file) {
@@ -3465,13 +3745,7 @@ export async function startPixiMedia() {
       (mode === "move" ? TIMELINE_DRAG_EXTENSION_SECONDS : 0);
     const moveBounds = null;
     const maxTargetTrackIndex =
-      type === "video"
-        ? 0
-        : type === "audio"
-          ? getAudioTrackCount()
-          : type === "image"
-            ? getImageTrackCount()
-            : getTextTrackCount();
+      type === "text" ? getTextTrackCount() : Math.max(0, getTimelineTrackCountByType(type) - 1);
 
     timelineClipDrag = {
       clip,
@@ -3854,7 +4128,7 @@ export async function startPixiMedia() {
     });
   }
 
-  function seekFromPointer(event) {
+  function seekFromPointer(event, { forceFrame = false } = {}) {
     if (!isSeekableMedia()) {
       return;
     }
@@ -3867,7 +4141,7 @@ export async function startPixiMedia() {
     const duration = getPlaybackDuration();
 
     if (currentKind === "video") {
-      setTimelinePlaybackTime(progress * duration, true);
+      setTimelinePlaybackTime(progress * duration, forceFrame);
     } else if (mediaElement) {
       mediaElement.currentTime = progress * duration;
     }
@@ -3902,7 +4176,7 @@ export async function startPixiMedia() {
       mediaElement.pause();
     }
 
-    seekFromPointer(event);
+    seekFromPointer(event, { forceFrame: true });
   }
 
   async function handleTimelinePointerUp(event) {
@@ -3910,7 +4184,7 @@ export async function startPixiMedia() {
       return;
     }
 
-    seekFromPointer(event);
+    seekFromPointer(event, { forceFrame: true });
     isSeeking = false;
 
     if (currentKind === "video" && wasPlayingBeforeSeek) {
@@ -4111,6 +4385,7 @@ export async function startPixiMedia() {
         fill: clip.fill,
         fontFamily: clip.fontFamily,
         fontSize: clip.fontSize,
+        fontSizeReferenceHeight: clip.fontSizeReferenceHeight,
         fontStyle: clip.fontStyle,
         fontWeight: clip.fontWeight,
         xRatio: clip.xRatio,
@@ -4121,6 +4396,7 @@ export async function startPixiMedia() {
     return {
       ...baseClip,
       imageFrame: clip.imageFrame ? { ...clip.imageFrame } : undefined,
+      imageFrameRatio: clip.imageFrameRatio ? { ...clip.imageFrameRatio } : undefined,
     };
   }
 
@@ -4269,7 +4545,9 @@ export async function startPixiMedia() {
       fillStyle: clip.fill || TEXT_CLIP_DEFAULT_COLOR,
       fontFamily: clip.fontFamily || "Inter, system-ui, sans-serif",
       fontStyle: clip.fontStyle || "normal",
-      fontSizeRatio: (Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE) / rect.height,
+      fontSizeRatio:
+        (Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE) /
+        (Number(clip.fontSizeReferenceHeight) || rect.height),
       fontWeight: String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT),
       startTime: clip.startTime,
       strokeStyle: "transparent",
@@ -4538,6 +4816,7 @@ export async function startPixiMedia() {
 
     if (lastTextTapClip === clip && now - lastTextTapTime <= TEXT_DOUBLE_TAP_MS) {
       textDragging = false;
+      textOverlayLayer.eventMode = "passive";
       lastTextTapClip = null;
       lastTextTapTime = 0;
       handleTextDoubleClick(clip, event);
@@ -4552,6 +4831,7 @@ export async function startPixiMedia() {
     selectedTextClip = clip;
     suppressNextCanvasToggle = true;
     textDragging = true;
+    textOverlayLayer.eventMode = "static";
 
     const local = textLayer.toLocal(event.global);
     const rect = getMediaSpriteRect();
@@ -4589,6 +4869,7 @@ export async function startPixiMedia() {
     }
 
     textDragging = false;
+    textOverlayLayer.eventMode = "passive";
     updateTextOverlayPosition();
     app.render();
   }
@@ -4646,6 +4927,7 @@ export async function startPixiMedia() {
       Math.max(Number(subtitleSizeInput.value) || TEXT_CLIP_DEFAULT_FONT_SIZE, 8),
       96
     );
+    selectedTextClip.fontSizeReferenceHeight = getMediaSpriteRect()?.height || PREVIEW_HEIGHT;
     selectedTextClip.fontWeight = subtitleWeightSelect.value || TEXT_CLIP_DEFAULT_FONT_WEIGHT;
     updateTextOverlayPosition();
     renderTimelineClipTracks();
@@ -4654,30 +4936,45 @@ export async function startPixiMedia() {
   }
 
   function startSubtitleEditing(clip) {
+    if (!layoutSubtitleEditInput(clip)) {
+      return;
+    }
+
+    subtitleEditInput.value = clip.text || TEXT_CLIP_DEFAULT_VALUE;
+    subtitleEditInput.style.fontSize = `${getRenderedSubtitleFontSize(clip)}px`;
+    subtitleEditInput.style.fontWeight = String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT);
+    subtitleEditInput.style.color = clip.fill || TEXT_CLIP_DEFAULT_COLOR;
+    subtitleEditInput.hidden = false;
+    subtitleEditInput.focus();
+    subtitleEditInput.select();
+  }
+
+  function layoutActiveSubtitleEditInput() {
+    if (!subtitleEditInput.hidden && selectedTextClip) {
+      layoutSubtitleEditInput(selectedTextClip);
+    }
+  }
+
+  function layoutSubtitleEditInput(clip) {
     const rect = getMediaSpriteRect();
-    const node = clip.overlayNode;
+    const node = clip?.overlayNode;
 
     if (!rect || !node) {
-      return;
+      return false;
     }
 
     const clientPoint = getClientPointFromCanvasPoint(node.x, node.y);
     const bounds = canvas.getBoundingClientRect();
     const width = Math.max(140, Math.min(bounds.width - 24, node.width + 40));
 
-    subtitleEditInput.value = clip.text || TEXT_CLIP_DEFAULT_VALUE;
     subtitleEditInput.style.left = `${Math.min(
       Math.max(clientPoint.x - width / 2, bounds.left + 12),
       bounds.right - width - 12
     )}px`;
     subtitleEditInput.style.top = `${clientPoint.y - Math.max(18, node.height / 2)}px`;
     subtitleEditInput.style.width = `${width}px`;
-    subtitleEditInput.style.fontSize = `${Number(clip.fontSize) || TEXT_CLIP_DEFAULT_FONT_SIZE}px`;
-    subtitleEditInput.style.fontWeight = String(clip.fontWeight || TEXT_CLIP_DEFAULT_FONT_WEIGHT);
-    subtitleEditInput.style.color = clip.fill || TEXT_CLIP_DEFAULT_COLOR;
-    subtitleEditInput.hidden = false;
-    subtitleEditInput.focus();
-    subtitleEditInput.select();
+
+    return true;
   }
 
   function finishSubtitleEditing({ commit = true } = {}) {
@@ -4730,6 +5027,7 @@ export async function startPixiMedia() {
     event.stopPropagation();
     event.stopImmediatePropagation?.();
     textDragging = false;
+    textOverlayLayer.eventMode = "passive";
     suppressNextCanvasToggle = true;
     hideSubtitleContextMenu();
     finishSubtitleEditing();
@@ -5026,6 +5324,8 @@ export async function startPixiMedia() {
   canvas.addEventListener("dblclick", handleCanvasDoubleClick);
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   timelineCanvas.addEventListener("wheel", handleTimelineWheel, { passive: false });
+  timelineSplitter.addEventListener("pointerdown", handleTimelineSplitterPointerDown);
+  timelineSplitter.addEventListener("keydown", handleTimelineSplitterKeyDown);
   window.addEventListener("resize", resizeCanvas);
   timeline.on("pointerdown", handleTimelinePointerDown);
   timeline.on("pointerup", handleTimelinePointerUp);
@@ -5064,7 +5364,7 @@ export async function startPixiMedia() {
   resizeCanvas();
 
   return () => {
-    clearCurrentMedia();
+    clearCurrentMedia({ invalidateLoads: true });
     document.body.classList.remove("pixi-media-page");
     chooseButton.removeEventListener("click", handleChooseClick);
     subtitleButton.removeEventListener("click", handleSubtitleClick);
@@ -5086,7 +5386,19 @@ export async function startPixiMedia() {
     canvas.removeEventListener("dblclick", handleCanvasDoubleClick);
     document.removeEventListener("pointerdown", handleDocumentPointerDown);
     timelineCanvas.removeEventListener("wheel", handleTimelineWheel);
+    timelineSplitter.removeEventListener("pointerdown", handleTimelineSplitterPointerDown);
+    timelineSplitter.removeEventListener("keydown", handleTimelineSplitterKeyDown);
+    window.removeEventListener("pointermove", handleTimelineSplitterPointerMove);
+    window.removeEventListener("pointerup", handleTimelineSplitterPointerUp);
+    window.removeEventListener("pointercancel", handleTimelineSplitterPointerUp);
     window.removeEventListener("resize", resizeCanvas);
+    document.body.classList.remove("media-timeline-resizing");
+    if (timelinePanelResizeFrame) {
+      window.cancelAnimationFrame(timelinePanelResizeFrame);
+      timelinePanelResizeFrame = 0;
+    }
+    pendingTimelinePanelHeightPx = null;
+    gameShell.style.removeProperty("--media-timeline-height");
     input.remove();
     timeline.off("pointerdown", handleTimelinePointerDown);
     timeline.off("pointerup", handleTimelinePointerUp);
@@ -5120,6 +5432,7 @@ export async function startPixiMedia() {
     app.ticker.remove(renderScene);
     app.destroy(false);
     timelineApp.destroy(false);
+    timelineSplitter.remove();
     timelineCanvas.remove();
   };
 }
