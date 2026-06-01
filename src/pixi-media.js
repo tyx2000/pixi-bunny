@@ -36,7 +36,7 @@ const EDITOR_PANEL_X = 0;
 const EDITOR_PANEL_Y = PREVIEW_HEIGHT;
 const EDITOR_PANEL_HEADER_HEIGHT = 26;
 const TRACK_LABEL_WIDTH = 76;
-const TRACK_ROW_HEIGHT = 60;
+const TRACK_ROW_HEIGHT = 40;
 const TRACK_ROW_GAP = 8;
 const RULER_TRACK_GAP = 10;
 const RULER_LABEL_HEIGHT = 16;
@@ -2400,41 +2400,59 @@ export async function startPixiMedia() {
 
   function drawEditorTrackLabels() {
     editorTimelineTrackLabels.removeChildren().forEach((child) => child.destroy());
-    addEditorTrackLabel("Video", getVideoTrackY() + VIDEO_TRACK_HEIGHT / 2);
+    addEditorTrackLabel("video", getVideoTrackY() + VIDEO_TRACK_HEIGHT / 2);
 
     for (let index = 0; index < getAudioTrackCount(); index += 1) {
-      addEditorTrackLabel(`Audio ${index + 1}`, getAudioTrackY(index) + AUDIO_TRACK_HEIGHT / 2);
+      addEditorTrackLabel("audio", getAudioTrackY(index) + AUDIO_TRACK_HEIGHT / 2);
     }
 
     for (let index = 0; index < getImageTrackCount(); index += 1) {
-      addEditorTrackLabel(`Image ${index + 1}`, getImageTrackY(index) + IMAGE_TRACK_HEIGHT / 2);
+      addEditorTrackLabel("image", getImageTrackY(index) + IMAGE_TRACK_HEIGHT / 2);
     }
 
     for (let index = 0; index < getTextTrackCount(); index += 1) {
-      addEditorTrackLabel(`Text ${index + 1}`, getTextTrackY(index) + TEXT_TRACK_HEIGHT / 2);
+      addEditorTrackLabel("text", getTextTrackY(index) + TEXT_TRACK_HEIGHT / 2);
     }
   }
 
-  function addEditorTrackLabel(text, y) {
+  function addEditorTrackLabel(type, y) {
     const scrolledY = getScrolledTrackY(y);
 
     if (scrolledY < getTrackViewportTop() || scrolledY > getTrackViewportBottom()) {
       return;
     }
 
-    const label = new Text({
-      text,
-      style: {
-        fill: "#cbd5e1",
-        fontFamily: "Inter, system-ui, sans-serif",
-        fontSize: 12,
-        fontWeight: "700",
-      },
-    });
+    const icon = createTrackTypeIcon(type);
+    icon.position.set(EDITOR_PANEL_X + 14, scrolledY);
+    editorTimelineTrackLabels.addChild(icon);
+  }
 
-    label.anchor.set(0, 0.5);
-    label.position.set(EDITOR_PANEL_X + 14, scrolledY);
-    editorTimelineTrackLabels.addChild(label);
+  function createTrackTypeIcon(type) {
+    const graphics = new Graphics();
+    const iconSize = 20;
+    const lineColor = 0xcbd5e1;
+    const lineWidth = 1.5;
+
+    if (type === "video") {
+      graphics.rect(0, 0, iconSize, iconSize).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(10, 5).lineTo(10, 15).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(5, 10).lineTo(15, 10).stroke({ color: lineColor, width: lineWidth });
+    } else if (type === "audio") {
+      graphics.moveTo(5, 8).bezierCurveTo(5, 5, 8, 5, 8, 8).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(5, 12).bezierCurveTo(5, 15, 8, 15, 8, 12).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(8, 5).lineTo(15, 2).lineTo(15, 18).lineTo(8, 15).stroke({ color: lineColor, width: lineWidth });
+    } else if (type === "image") {
+      graphics.rect(2, 2, 16, 16).stroke({ color: lineColor, width: lineWidth });
+      graphics.circle(7, 8, 2).fill({ color: lineColor });
+      graphics.moveTo(2, 16).lineTo(10, 8).lineTo(18, 14).stroke({ color: lineColor, width: lineWidth });
+    } else if (type === "text") {
+      graphics.moveTo(4, 6).lineTo(16, 6).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(4, 10).lineTo(16, 10).stroke({ color: lineColor, width: lineWidth });
+      graphics.moveTo(4, 14).lineTo(12, 14).stroke({ color: lineColor, width: lineWidth });
+    }
+
+    graphics.anchor.set(0.5);
+    return graphics;
   }
 
   function getEditorTimelineRulerDurationSeconds(duration) {
