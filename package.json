@@ -8,6 +8,7 @@
     "build": "vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test": "node --test",
     "preview": "vite preview"
   },
   "devDependencies": {

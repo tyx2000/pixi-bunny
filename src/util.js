@@ -262,7 +262,17 @@ export async function exportVideoWithTextOverlay(source, overlay = {}, options =
 }
 
 export async function exportTimelineComposition(videoClips, overlay = {}, options = {}) {
-  const { audioBuffer = null, duration, fps = 30, onProgress, poolSize = 4 } = options;
+  const {
+    audioBuffer = null,
+    bitrate = QUALITY_HIGH,
+    duration,
+    fps = 30,
+    height: outputHeight,
+    onProgress,
+    poolSize = 4,
+    signal,
+    width: outputWidth,
+  } = options;
 
   if (!Array.isArray(videoClips) || videoClips.length === 0) {
     throw new Error("No video clips to export.");
@@ -275,15 +285,21 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
 
   try {
     for (const clip of videoClips) {
+      throwIfAborted(signal);
       providers.push({
         ...clip,
-        provider: await createMediabunnyVideoFrameProvider(clip.file, { fit: "contain", poolSize }),
+        provider: await createMediabunnyVideoFrameProvider(clip.file, {
+          fit: "contain",
+          height: outputHeight,
+          poolSize,
+          width: outputWidth,
+        }),
       });
     }
 
     const baseProvider = providers[0].provider;
-    const width = baseProvider.width;
-    const height = baseProvider.height;
+    const width = Math.max(1, Math.round(outputWidth || baseProvider.width));
+    const height = Math.max(1, Math.round(outputHeight || baseProvider.height));
     const outputCanvas = document.createElement("canvas");
     const outputContext = outputCanvas.getContext("2d", { alpha: false });
 
@@ -296,7 +312,7 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
 
     const outputFormat = new Mp4OutputFormat();
     const videoCodec = await getFirstEncodableVideoCodec(outputFormat.getSupportedCodecs(), {
-      bitrate: QUALITY_HIGH,
+      bitrate,
       height,
       width,
     });
@@ -311,20 +327,20 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
       target,
     });
     const videoSource = new CanvasSource(outputCanvas, {
-      bitrate: QUALITY_HIGH,
+      bitrate,
       codec: videoCodec,
       keyFrameInterval: 2,
     });
     const audioCodec =
       audioBuffer &&
       (await getFirstEncodableAudioCodec(outputFormat.getSupportedAudioCodecs(), {
-        bitrate: QUALITY_HIGH,
+        bitrate,
         numberOfChannels: audioBuffer.numberOfChannels,
         sampleRate: audioBuffer.sampleRate,
       }));
     const audioSource = audioCodec
       ? new AudioBufferSource({
-          bitrate: QUALITY_HIGH,
+          bitrate,
           codec: audioCodec,
           numberOfChannels: audioBuffer.numberOfChannels,
           sampleRate: audioBuffer.sampleRate,
@@ -343,6 +359,7 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
     const frameCount = Math.max(1, Math.ceil(safeDuration / frameDuration));
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      throwIfAborted(signal);
       const timestamp = Math.min(frameIndex * frameDuration, Math.max(0, safeDuration - 0.001));
       const activeClip = providers.find(
         (clip) => timestamp >= clip.startTime && timestamp < clip.startTime + clip.duration
@@ -372,13 +389,21 @@ export async function exportTimelineComposition(videoClips, overlay = {}, option
       await videoSource.add(timestamp, Math.min(frameDuration, safeDuration - timestamp));
 
       if (typeof onProgress === "function") {
-        onProgress(Math.min(1, (timestamp + frameDuration) / safeDuration));
+        onProgress(Math.min(0.95, ((timestamp + frameDuration) / safeDuration) * 0.95), "render");
       }
     }
 
     videoSource.close();
+    throwIfAborted(signal);
+    if (typeof onProgress === "function") {
+      onProgress(0.98, "finalize");
+    }
     await audioPromise;
+    throwIfAborted(signal);
     await output.finalize();
+    if (typeof onProgress === "function") {
+      onProgress(1, "complete");
+    }
 
     if (!target.buffer) {
       throw new Error("Mediabunny did not produce an output buffer.");
@@ -524,6 +549,9 @@ async function copyAudioPackets(audioTrack, audioSource, duration) {
 
 function drawTextOverlay(context, width, height, time, overlay) {
   const {
+    align = "center",
+    backgroundAlpha = 0,
+    backgroundColor = "#000000",
     duration = 5,
     fillStyle = "#ffffff",
     fontFamily = "Inter, system-ui, sans-serif",
@@ -531,11 +559,17 @@ function drawTextOverlay(context, width, height, time, overlay) {
     fontSizeRatio = 0.085,
     fontWeight = "800",
     intervals,
+    lineHeightRatio = 1.25,
     maxWidthRatio = 1,
+    shadowBlurRatio = 0,
+    shadowColor = "#000000",
+    shadowDistanceRatio = 0,
     startTime = 0,
     strokeStyle = "rgba(0, 0, 0, 0.82)",
+    strokeWidthRatio,
     text = "",
     transitionSeconds = 0,
+    transitionType = "rotateY",
     xRatio = 0.5,
     yRatio = 0.5,
   } = overlay;
@@ -544,6 +578,7 @@ function drawTextOverlay(context, width, height, time, overlay) {
     intervals,
     startTime,
     transitionSeconds,
+    transitionType,
   });
 
   if (!text || transition.alpha <= 0) {
@@ -558,25 +593,73 @@ function drawTextOverlay(context, width, height, time, overlay) {
   context.save();
   context.globalAlpha = transition.alpha;
   context.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  context.textAlign = "center";
+  context.textAlign = align;
   context.textBaseline = "middle";
   context.lineJoin = "round";
-  context.lineWidth = Math.max(3, Math.round(fontSize * 0.16));
+  context.lineWidth =
+    strokeWidthRatio === undefined
+      ? Math.max(3, Math.round(fontSize * 0.16))
+      : Math.max(0, Math.round(height * strokeWidthRatio));
   context.strokeStyle = strokeStyle;
   context.fillStyle = fillStyle;
+  context.shadowColor = shadowColor;
+  context.shadowBlur = Math.max(0, height * shadowBlurRatio);
+  context.shadowOffsetX = Math.max(0, height * shadowDistanceRatio);
+  context.shadowOffsetY = Math.max(0, height * shadowDistanceRatio);
   const lines = wrapCanvasTextLines(context, text, maxTextWidth);
-  const lineHeight = Math.max(1, Math.round(fontSize * 1.25));
+  const lineHeight = Math.max(1, Math.round(fontSize * Math.max(0.8, lineHeightRatio)));
   const firstLineY = -((lines.length - 1) * lineHeight) / 2;
+  const lineWidths = lines.map((line) => context.measureText(line).width);
+  const blockWidth = Math.min(maxTextWidth, Math.max(...lineWidths, 1));
+  const blockHeight = Math.max(fontSize, (lines.length - 1) * lineHeight + fontSize);
+  const alignOffset = align === "left" ? -blockWidth / 2 : align === "right" ? blockWidth / 2 : 0;
 
   context.translate(x, y);
   context.scale(transition.axisScale, 1);
+  if (backgroundAlpha > 0) {
+    const paddingX = Math.max(6, fontSize * 0.45);
+    const paddingY = Math.max(3, fontSize * 0.25);
+
+    context.save();
+    context.shadowColor = "transparent";
+    context.fillStyle = backgroundColor;
+    context.globalAlpha *= Math.min(Math.max(backgroundAlpha, 0), 1);
+    fillRoundRect(
+      context,
+      -blockWidth / 2 - paddingX,
+      -blockHeight / 2 - paddingY,
+      blockWidth + paddingX * 2,
+      blockHeight + paddingY * 2,
+      4
+    );
+    context.restore();
+  }
   lines.forEach((line, index) => {
     const lineY = firstLineY + index * lineHeight;
 
-    context.strokeText(line, 0, lineY);
-    context.fillText(line, 0, lineY);
+    if (context.lineWidth > 0) {
+      context.strokeText(line, alignOffset, lineY);
+    }
+    context.fillText(line, alignOffset, lineY);
   });
   context.restore();
+}
+
+function fillRoundRect(context, x, y, width, height, radius) {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+  context.fill();
 }
 
 function wrapCanvasTextLines(context, text, maxWidth) {
@@ -650,11 +733,17 @@ function drawImageOverlay(context, width, height, time, overlay) {
     imageSource,
     startTime = 0,
     transitionSeconds = 0,
+    transitionType = "rotateY",
     widthRatio = 0.5,
     xRatio = 0.25,
     yRatio = 0.25,
   } = overlay;
-  const transition = getOverlayTransitionAtTime(time, { duration, startTime, transitionSeconds });
+  const transition = getOverlayTransitionAtTime(time, {
+    duration,
+    startTime,
+    transitionSeconds,
+    transitionType,
+  });
 
   if (transition.alpha <= 0) {
     return;
@@ -703,6 +792,14 @@ function drawContainedFrame(context, sourceCanvas, width, height) {
   context.drawImage(sourceCanvas, x, y, targetWidth, targetHeight);
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  throw new DOMException("Export canceled.", "AbortError");
+}
+
 function getOverlayTransitionAtTime(time, overlay) {
   const intervals = Array.isArray(overlay.intervals)
     ? overlay.intervals
@@ -725,8 +822,8 @@ function getOverlayTransitionAtTime(time, overlay) {
   }
 
   return {
-    alpha: progress,
-    axisScale: Math.cos((1 - progress) * (Math.PI / 2)),
+    alpha: overlay.transitionType === "none" ? (progress > 0 ? 1 : 0) : progress,
+    axisScale: overlay.transitionType === "rotateY" ? Math.cos((1 - progress) * (Math.PI / 2)) : 1,
   };
 }
 
