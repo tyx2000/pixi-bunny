@@ -2438,20 +2438,35 @@ export async function startPixiMedia() {
       graphics.moveTo(10, 5).lineTo(10, 15).stroke({ color: lineColor, width: lineWidth });
       graphics.moveTo(5, 10).lineTo(15, 10).stroke({ color: lineColor, width: lineWidth });
     } else if (type === "audio") {
-      graphics.moveTo(5, 8).bezierCurveTo(5, 5, 8, 5, 8, 8).stroke({ color: lineColor, width: lineWidth });
-      graphics.moveTo(5, 12).bezierCurveTo(5, 15, 8, 15, 8, 12).stroke({ color: lineColor, width: lineWidth });
-      graphics.moveTo(8, 5).lineTo(15, 2).lineTo(15, 18).lineTo(8, 15).stroke({ color: lineColor, width: lineWidth });
+      graphics
+        .moveTo(5, 8)
+        .bezierCurveTo(5, 5, 8, 5, 8, 8)
+        .stroke({ color: lineColor, width: lineWidth });
+      graphics
+        .moveTo(5, 12)
+        .bezierCurveTo(5, 15, 8, 15, 8, 12)
+        .stroke({ color: lineColor, width: lineWidth });
+      graphics
+        .moveTo(8, 5)
+        .lineTo(15, 2)
+        .lineTo(15, 18)
+        .lineTo(8, 15)
+        .stroke({ color: lineColor, width: lineWidth });
     } else if (type === "image") {
       graphics.rect(2, 2, 16, 16).stroke({ color: lineColor, width: lineWidth });
       graphics.circle(7, 8, 2).fill({ color: lineColor });
-      graphics.moveTo(2, 16).lineTo(10, 8).lineTo(18, 14).stroke({ color: lineColor, width: lineWidth });
+      graphics
+        .moveTo(2, 16)
+        .lineTo(10, 8)
+        .lineTo(18, 14)
+        .stroke({ color: lineColor, width: lineWidth });
     } else if (type === "text") {
       graphics.moveTo(4, 6).lineTo(16, 6).stroke({ color: lineColor, width: lineWidth });
       graphics.moveTo(4, 10).lineTo(16, 10).stroke({ color: lineColor, width: lineWidth });
       graphics.moveTo(4, 14).lineTo(12, 14).stroke({ color: lineColor, width: lineWidth });
     }
 
-    graphics.anchor.set(0.5);
+    graphics.pivot.set(iconSize / 2, iconSize / 2);
     return graphics;
   }
 
