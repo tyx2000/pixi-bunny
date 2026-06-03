@@ -453,8 +453,67 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
 
 .track-panel-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 8px;
+}
+
+.project-history-panel {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.project-history-panel > strong {
+  color: #f5f5f5;
+}
+
+.project-history-list {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.project-history-empty {
+  margin: 0;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+.project-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #111113;
+}
+
+.project-history-time {
+  overflow: hidden;
+  color: #d4d4d8;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-history-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.project-history-actions button {
+  min-width: 52px;
+}
+
+.project-history-item[data-active="true"] {
+  border-color: #38bdf8;
+  color: #f8fafc;
 }
 
 .subtitle-panel-header,

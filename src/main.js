@@ -1,6 +1,5 @@
 import { startJumpGame } from "./jump.js";
 import { startPixiJumpGame } from "./pixi-jump.js";
-import { startPixiMedia } from "./pixi-media.js";
 import { startPixiPuzzle } from "./pixi-puzzle.js";
 import { startPuzzle } from "./puzzle.js";
 import { startSnooker } from "./snooker.js";
@@ -17,7 +16,7 @@ if (game === "snooker") {
 } else if (game === "pixi-jump") {
   startPixiJumpGame();
 } else if (game === "pixi-media") {
-  startPixiMedia();
+  window.location.replace("/pixi-media.html");
 } else {
   startPuzzle();
 }

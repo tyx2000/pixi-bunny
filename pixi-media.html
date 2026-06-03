@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pixi-media</title>
+  </head>
+  <body class="pixi-media-page">
+    <main id="game-shell">
+      <div id="hud" aria-live="polite">
+        <span>File: <strong id="moves-count">none</strong></span>
+        <span id="status-text">Image, video, or audio</span>
+        <div class="media-toolbar-left">
+          <button id="shuffle-button" type="button">媒体文件</button>
+          <button id="subtitle-button" type="button">字幕</button>
+        </div>
+        <div id="performance-stats" class="media-performance-stats" aria-live="polite">
+          CPU N/A · GPU N/A · MEM N/A
+        </div>
+        <div class="media-toolbar-right">
+          <span id="export-progress" class="export-progress" hidden>0%</span>
+          <button id="export-button" type="button" disabled>导出</button>
+        </div>
+      </div>
+
+      <canvas id="app-canvas"></canvas>
+      <div
+        id="timeline-splitter"
+        class="media-timeline-splitter"
+        role="separator"
+        tabindex="0"
+        aria-label="调整时间线高度"
+        aria-orientation="horizontal"
+      ></div>
+      <canvas id="timeline-canvas"></canvas>
+
+      <aside id="media-side-panel" class="media-side-panel">
+        <button
+          id="media-side-panel-toggle"
+          type="button"
+          class="media-side-panel-toggle"
+          aria-label="折叠侧边面板"
+        >
+          ‹
+        </button>
+
+        <section id="track-panel" class="track-panel">
+          <strong>轨道</strong>
+          <div id="track-panel-rows" class="track-panel-rows"></div>
+          <div class="track-panel-actions">
+            <button id="save-project-button" type="button">保存</button>
+          </div>
+          <div id="project-history-panel" class="project-history-panel">
+            <strong>历史记录</strong>
+            <div id="project-history-list" class="project-history-list"></div>
+          </div>
+        </section>
+
+        <section id="clip-inspector" class="clip-inspector">
+          <strong id="clip-inspector-title">Clip 设置</strong>
+          <label id="clip-start-label"><span>开始</span><input id="clip-start-input" type="number" step="0.1" min="0" max="99999" value="0" aria-label="Clip 开始时间" /></label>
+          <label id="clip-duration-label"><span>时长</span><input id="clip-duration-input" type="number" step="0.1" min="0.02" max="99999" value="0" aria-label="Clip 时长" /></label>
+          <label id="clip-end-label"><span>结束</span><input id="clip-end-input" type="number" step="0.1" min="0" max="99999" value="0" aria-label="Clip 结束时间" /></label>
+          <label id="clip-text-label"><span>文字</span><input id="clip-text-input" type="text" aria-label="Clip 字幕文本" /></label>
+          <label id="clip-volume-label"><span>音量</span><input id="clip-volume-input" type="number" step="1" min="0" max="200" value="100" aria-label="Clip 音量" /></label>
+          <label id="clip-muted-label"><span>静音</span><input id="clip-muted-input" type="checkbox" aria-label="Clip 静音" /></label>
+          <label id="clip-transition-label"><span>过渡</span><select id="clip-transition-select" aria-label="Clip 过渡"><option value="none">none</option><option value="fade">fade</option><option value="rotateY" selected>rotateY</option></select></label>
+          <label id="clip-transition-duration-label"><span>秒数</span><input id="clip-transition-duration-input" type="number" step="0.05" min="0" max="5" value="0.35" aria-label="Clip 过渡秒数" /></label>
+          <label id="clip-subtitle-color-label"><span>颜色</span><input id="clip-subtitle-color-input" type="color" value="#ffffff" aria-label="Clip 字幕颜色" /></label>
+          <label id="clip-subtitle-size-label"><span>字号</span><input id="clip-subtitle-size-input" type="number" step="1" min="8" max="96" value="14" aria-label="Clip 字幕字号" /></label>
+          <label id="clip-subtitle-weight-label"><span>字重</span><select id="clip-subtitle-weight-select" aria-label="Clip 字幕字重"><option>400</option><option>500</option><option>600</option><option>700</option><option>800</option></select></label>
+          <label id="clip-subtitle-font-label"><span>字体</span><select id="clip-subtitle-font-select" aria-label="Clip 字幕字体"><option>Inter, system-ui, sans-serif</option><option>Arial, Helvetica, sans-serif</option><option>Georgia, serif</option><option>Menlo, Monaco, Consolas, monospace</option></select></label>
+          <label id="clip-subtitle-align-label"><span>对齐</span><select id="clip-subtitle-align-select" aria-label="Clip 字幕对齐"><option>left</option><option selected>center</option><option>right</option></select></label>
+          <label id="clip-subtitle-line-height-label"><span>行高</span><input id="clip-subtitle-line-height-input" type="number" step="0.1" min="0.8" max="3" value="1.25" aria-label="Clip 字幕行高" /></label>
+          <label id="clip-subtitle-stroke-color-label"><span>描边</span><input id="clip-subtitle-stroke-color-input" type="color" value="#000000" aria-label="Clip 字幕描边颜色" /></label>
+          <label id="clip-subtitle-stroke-width-label"><span>宽度</span><input id="clip-subtitle-stroke-width-input" type="number" step="1" min="0" max="20" value="0" aria-label="Clip 字幕描边宽度" /></label>
+          <label id="clip-subtitle-shadow-color-label"><span>阴影</span><input id="clip-subtitle-shadow-color-input" type="color" value="#000000" aria-label="Clip 字幕阴影颜色" /></label>
+          <label id="clip-subtitle-shadow-blur-label"><span>模糊</span><input id="clip-subtitle-shadow-blur-input" type="number" step="1" min="0" max="40" value="0" aria-label="Clip 字幕阴影模糊" /></label>
+          <label id="clip-subtitle-shadow-distance-label"><span>距离</span><input id="clip-subtitle-shadow-distance-input" type="number" step="1" min="0" max="40" value="0" aria-label="Clip 字幕阴影距离" /></label>
+          <label id="clip-subtitle-background-color-label"><span>背景</span><input id="clip-subtitle-background-color-input" type="color" value="#000000" aria-label="Clip 字幕背景颜色" /></label>
+          <label id="clip-subtitle-background-alpha-label"><span>透明</span><input id="clip-subtitle-background-alpha-input" type="number" step="0.05" min="0" max="1" value="0" aria-label="Clip 字幕背景透明度" /></label>
+          <button id="clip-subtitle-apply-all-button" type="button">应用到全部字幕</button>
+        </section>
+      </aside>
+    </main>
+
+    <div id="subtitle-context-menu" class="subtitle-context-menu" hidden>
+      <label><span>颜色</span><input id="subtitle-color-input" type="color" value="#ffffff" aria-label="字幕颜色" /></label>
+      <label><span>字号</span><input id="subtitle-size-input" type="number" min="8" max="96" step="1" value="14" aria-label="字幕字号" /></label>
+      <label><span>字重</span><select id="subtitle-weight-select" aria-label="字幕字重"><option>400</option><option>500</option><option>600</option><option>700</option><option>800</option></select></label>
+      <label><span>字体</span><select id="subtitle-font-select" aria-label="字幕字体"><option>Inter, system-ui, sans-serif</option><option>Arial, Helvetica, sans-serif</option><option>Georgia, serif</option><option>Menlo, Monaco, Consolas, monospace</option></select></label>
+      <label><span>对齐</span><select id="subtitle-align-select" aria-label="字幕对齐"><option>left</option><option selected>center</option><option>right</option></select></label>
+      <label><span>行高</span><input id="subtitle-line-height-input" type="number" step="0.1" min="0.8" max="3" value="1.25" aria-label="字幕行高" /></label>
+      <label><span>描边</span><input id="subtitle-stroke-color-input" type="color" value="#000000" aria-label="字幕描边颜色" /></label>
+      <label><span>宽度</span><input id="subtitle-stroke-width-input" type="number" step="1" min="0" max="20" value="0" aria-label="字幕描边宽度" /></label>
+      <label><span>阴影</span><input id="subtitle-shadow-color-input" type="color" value="#000000" aria-label="字幕阴影颜色" /></label>
+      <label><span>模糊</span><input id="subtitle-shadow-blur-input" type="number" step="1" min="0" max="40" value="0" aria-label="字幕阴影模糊" /></label>
+      <label><span>距离</span><input id="subtitle-shadow-distance-input" type="number" step="1" min="0" max="40" value="0" aria-label="字幕阴影距离" /></label>
+      <label><span>背景</span><input id="subtitle-background-color-input" type="color" value="#000000" aria-label="字幕背景颜色" /></label>
+      <label><span>透明</span><input id="subtitle-background-alpha-input" type="number" step="0.05" min="0" max="1" value="0" aria-label="字幕背景透明度" /></label>
+      <button id="apply-subtitle-style-all-button" type="button">应用到全部</button>
+    </div>
+    <input id="subtitle-edit-input" class="subtitle-edit-input" type="text" hidden aria-label="编辑字幕文本" />
+    <section id="subtitle-panel" class="subtitle-panel">
+      <div class="subtitle-panel-header"><strong>字幕列表</strong></div>
+      <div id="subtitle-panel-list" class="subtitle-panel-list"></div>
+    </section>
+
+    <div id="export-dialog" class="export-dialog" hidden>
+      <strong>导出设置</strong>
+      <label><span>宽度</span><input id="export-width-input" type="number" step="1" min="0" max="7680" value="0" aria-label="导出宽度" /></label>
+      <label><span>高度</span><input id="export-height-input" type="number" step="1" min="0" max="4320" value="0" aria-label="导出高度" /></label>
+      <label><span>帧率</span><input id="export-fps-input" type="number" step="1" min="24" max="60" value="30" aria-label="导出帧率" /></label>
+      <label><span>码率</span><input id="export-bitrate-input" type="number" step="0.5" min="1" max="30" value="8" aria-label="导出码率 Mbps" /></label>
+      <label><span>文件名</span><input id="export-file-name-input" type="text" aria-label="导出文件名" /></label>
+      <div class="export-dialog-actions">
+        <button id="export-cancel-button" type="button">取消</button>
+        <button id="export-start-button" type="button">开始导出</button>
+      </div>
+    </div>
+
+    <input id="media-file-input" type="file" accept="image/*,video/*,audio/*" hidden />
+    <script type="module" src="/src/pixi-media-entry.js"></script>
+  </body>
+</html>
