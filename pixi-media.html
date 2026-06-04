@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/style.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>pixi-media</title>
   </head>
-  <body class="pixi-media-page">
+  <body class="pixi-media-page pixi-media-booting">
     <main id="game-shell">
       <div id="hud" aria-live="polite">
         <span>File: <strong id="moves-count">none</strong></span>
@@ -102,10 +103,6 @@
       <button id="apply-subtitle-style-all-button" type="button">应用到全部</button>
     </div>
     <input id="subtitle-edit-input" class="subtitle-edit-input" type="text" hidden aria-label="编辑字幕文本" />
-    <section id="subtitle-panel" class="subtitle-panel">
-      <div class="subtitle-panel-header"><strong>字幕列表</strong></div>
-      <div id="subtitle-panel-list" class="subtitle-panel-list"></div>
-    </section>
 
     <div id="export-dialog" class="export-dialog" hidden>
       <strong>导出设置</strong>

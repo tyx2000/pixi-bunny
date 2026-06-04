@@ -93,7 +93,7 @@ import {
   VIEW_HEIGHT,
   VIEW_WIDTH,
 } from "./constants.js";
-import { createNumberInput, requireElement } from "./dom-controls.js";
+import { requireElement } from "./dom-controls.js";
 import { createExportDialog } from "./export-dialog.js";
 import {
   formatBytes,
@@ -132,7 +132,7 @@ import {
 let TIMELINE_PIXELS_PER_SECOND = DEFAULT_TIMELINE_PIXELS_PER_SECOND;
 
 export async function startPixiMedia() {
-  document.body.classList.add("pixi-media-page");
+  document.body.classList.add("pixi-media-page", "pixi-media-booting");
 
   const canvas = document.getElementById("app-canvas");
   const fileName = document.getElementById("moves-count");
@@ -180,8 +180,6 @@ export async function startPixiMedia() {
     editInput: subtitleEditInput,
     fontSelect: subtitleFontSelect,
     lineHeightInput: subtitleLineHeightInput,
-    panel: subtitlePanel,
-    panelList: subtitlePanelList,
     shadowBlurInput: subtitleShadowBlurInput,
     shadowColorInput: subtitleShadowColorInput,
     shadowDistanceInput: subtitleShadowDistanceInput,
@@ -716,7 +714,6 @@ export async function startPixiMedia() {
     wasPlayingBeforeSeek = false;
     renderTrackPanel();
     renderClipInspector();
-    renderSubtitlePanel();
     hideTimeline();
     hideEditorTimeline();
   }
@@ -4542,7 +4539,6 @@ export async function startPixiMedia() {
     } else if (type === "text") {
       selectedTextClip = clip;
       syncSubtitleStyleControls(clip);
-      renderSubtitlePanel();
     }
 
     renderClipInspector();
@@ -4667,7 +4663,6 @@ export async function startPixiMedia() {
       clip.text = clipTextInput.value || TEXT_CLIP_DEFAULT_VALUE;
       applyClipSubtitleStyleControlsToClip(clip);
       syncSubtitleStyleControls(clip);
-      renderSubtitlePanel();
     }
 
     refreshTimelineAfterClipEdit(type, { rebuildVideo: type === "video" });
@@ -4754,7 +4749,6 @@ export async function startPixiMedia() {
     });
     refreshTimelineAfterClipEdit("text");
     renderClipInspector();
-    renderSubtitlePanel();
     statusText.textContent = "Subtitle style applied";
   }
 
@@ -5944,7 +5938,6 @@ export async function startPixiMedia() {
     updateTextOverlayPosition();
     renderTimelineClipTracks();
     drawEditorTimeline();
-    renderSubtitlePanel();
     renderClipInspector();
     app.render();
   }
@@ -6081,7 +6074,6 @@ export async function startPixiMedia() {
       renderTimelineClipTracks();
       updateTextOverlayPosition();
       drawEditorTimeline();
-      renderSubtitlePanel();
       app.render();
     }
 
@@ -6346,119 +6338,6 @@ export async function startPixiMedia() {
 
   function handleSubtitleClick() {
     addTextTimelineClip();
-    renderSubtitlePanel();
-  }
-
-  function renderSubtitlePanel() {
-    subtitlePanelList.replaceChildren();
-
-    if (textTimelineClips.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "subtitle-panel-empty";
-      empty.textContent = "暂无字幕";
-      subtitlePanelList.append(empty);
-      return;
-    }
-
-    const orderedClips = [...textTimelineClips].sort((left, right) => {
-      if (Math.abs(left.startTime - right.startTime) > TRACK_OVERLAP_EPSILON) {
-        return left.startTime - right.startTime;
-      }
-
-      return textTimelineClips.indexOf(left) - textTimelineClips.indexOf(right);
-    });
-
-    orderedClips.forEach((clip, index) => {
-      subtitlePanelList.append(createSubtitlePanelRow(clip, index));
-    });
-  }
-
-  function createSubtitlePanelRow(clip, index) {
-    const row = document.createElement("div");
-    row.className = `subtitle-panel-row${selectedTextClip === clip ? " is-selected" : ""}`;
-    const mainRow = document.createElement("div");
-    mainRow.className = "subtitle-panel-row-main";
-    const metaRow = document.createElement("div");
-    metaRow.className = "subtitle-panel-row-meta";
-    const label = document.createElement("button");
-    label.type = "button";
-    label.textContent = String(index + 1).padStart(2, "0");
-    const textInput = document.createElement("input");
-    textInput.type = "text";
-    textInput.value = clip.text || TEXT_CLIP_DEFAULT_VALUE;
-    textInput.ariaLabel = "字幕文本";
-    const startInput = createNumberInput("字幕开始时间", clip.startTime, "0.1", "0", "99999");
-    const endInput = createNumberInput(
-      "字幕结束时间",
-      clip.startTime + clip.duration,
-      "0.1",
-      "0",
-      "99999"
-    );
-    const settingsButton = document.createElement("button");
-    settingsButton.type = "button";
-    settingsButton.className = "subtitle-panel-row-settings";
-    settingsButton.textContent = "设置";
-
-    label.addEventListener("click", () => {
-      selectTimelineClip("text", clip);
-      playbackTime = Math.min(Math.max(clip.startTime, 0), getTimelineDuration());
-      updateTextOverlayPosition();
-      drawTimeline();
-      drawEditorTimeline();
-      app.render();
-    });
-    textInput.addEventListener("change", () => {
-      recordTimelineHistory();
-      clip.text = textInput.value || TEXT_CLIP_DEFAULT_VALUE;
-      refreshSubtitleEditingViews();
-    });
-    startInput.addEventListener("change", () => {
-      updateSubtitlePanelRowTiming(clip, startInput, endInput);
-    });
-    endInput.addEventListener("change", () => {
-      updateSubtitlePanelRowTiming(clip, startInput, endInput);
-    });
-    settingsButton.addEventListener("click", (event) => {
-      finishSubtitleEditing();
-      selectTimelineClip("text", clip);
-      selectedTextClip = clip;
-      renderSubtitlePanel();
-      clipInspector.scrollIntoView({ block: "nearest" });
-      event.stopPropagation();
-    });
-
-    mainRow.append(label, textInput);
-    metaRow.append(startInput, endInput, settingsButton);
-    row.append(mainRow, metaRow);
-    return row;
-  }
-
-  function updateSubtitlePanelRowTiming(clip, startInput, endInput) {
-    const previousStart = clip.startTime;
-    const previousDuration = clip.duration;
-    const startTime = Math.max(0, Number(startInput.value) || 0);
-    const endTime = Math.max(
-      startTime + TRACK_OVERLAP_EPSILON,
-      Number(endInput.value) || startTime
-    );
-    const duration = Math.max(TRACK_OVERLAP_EPSILON, endTime - startTime);
-
-    if (hasTimelineClipOverlap("text", clip, getClipTrackIndex(clip), startTime, duration)) {
-      clip.startTime = previousStart;
-      clip.duration = previousDuration;
-      startInput.value = String(previousStart);
-      endInput.value = String(previousStart + previousDuration);
-      statusText.textContent = "Subtitle timing overlaps";
-      return;
-    }
-
-    recordTimelineHistory();
-    clip.startTime = startTime;
-    clip.duration = duration;
-    refreshTimelineAfterClipEdit("text");
-    renderSubtitlePanel();
-    statusText.textContent = "Subtitle timing updated";
   }
 
   function isPointerInEditorPanel() {
@@ -6662,13 +6541,16 @@ export async function startPixiMedia() {
   renderTrackPanel();
   renderProjectHistoryPanel();
   renderClipInspector();
-  renderSubtitlePanel();
   resizeCanvas();
+  window.requestAnimationFrame(() => {
+    document.body.classList.remove("pixi-media-booting");
+  });
 
   return () => {
     cancelTimelineClipReleaseAnimation();
     clearCurrentMedia({ invalidateLoads: true });
     document.body.classList.remove("pixi-media-page");
+    document.body.classList.remove("pixi-media-booting");
     document.body.classList.remove("media-side-panel-collapsed");
     chooseButton.removeEventListener("click", handleChooseClick);
     subtitleButton.removeEventListener("click", handleSubtitleClick);

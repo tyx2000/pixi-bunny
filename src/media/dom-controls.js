@@ -1,22 +1,3 @@
-export function createNumberInput(label, value, step = "1", min = "", max = "") {
-  const input = document.createElement("input");
-
-  input.type = "number";
-  input.step = step;
-  input.value = String(value);
-  input.ariaLabel = label;
-
-  if (min !== "") {
-    input.min = min;
-  }
-
-  if (max !== "") {
-    input.max = max;
-  }
-
-  return input;
-}
-
 export function requireElement(id, type = HTMLElement) {
   const element = document.getElementById(id);
 

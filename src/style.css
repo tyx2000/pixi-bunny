@@ -121,6 +121,10 @@ body.pixi-media-page #game-shell {
   transition: grid-template-columns 160ms ease;
 }
 
+body.pixi-media-page.pixi-media-booting #game-shell {
+  visibility: hidden;
+}
+
 body.pixi-media-page.media-side-panel-collapsed #game-shell {
   grid-template-columns: minmax(0, 1fr) 0;
 }
@@ -271,7 +275,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
 
 .subtitle-context-menu[hidden],
 .subtitle-edit-input[hidden],
-.subtitle-panel[hidden],
 .export-dialog[hidden],
 .clip-inspector[hidden] {
   display: none;
@@ -287,7 +290,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
 .subtitle-context-menu input,
 .subtitle-context-menu select,
 .subtitle-edit-input,
-.subtitle-panel input,
 .export-dialog input,
 .clip-inspector input,
 .clip-inspector select {
@@ -307,7 +309,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
 
 .subtitle-context-menu input[type="number"],
 .subtitle-context-menu select,
-.subtitle-panel input,
 .export-dialog input,
 .clip-inspector input,
 .clip-inspector select {
@@ -316,7 +317,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
 }
 
 .subtitle-context-menu button,
-.subtitle-panel button,
 .export-dialog button,
 .clip-inspector button,
 .track-panel button {
@@ -383,7 +383,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
   cursor: pointer;
 }
 
-.subtitle-panel,
 .track-panel,
 .clip-inspector {
   position: relative;
@@ -395,14 +394,6 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
   background: #18181b;
   box-shadow: none;
   font-size: 12px;
-}
-
-.subtitle-panel {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
-  min-height: 0;
-  padding: 10px;
 }
 
 .track-panel,
@@ -516,59 +507,11 @@ body.pixi-media-page #hud button:hover:not(:disabled) {
   color: #f8fafc;
 }
 
-.subtitle-panel-header,
 .export-dialog-actions {
   display: flex;
   gap: 8px;
   align-items: center;
   justify-content: space-between;
-}
-
-.subtitle-panel-list {
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  overflow: auto;
-}
-
-.subtitle-panel-row {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid #2f2f35;
-  border-radius: 6px;
-  background: #202024;
-}
-
-.subtitle-panel-row-main {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-}
-
-.subtitle-panel-row-meta {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-}
-
-.subtitle-panel-row-settings {
-  padding: 0 6px;
-}
-
-.subtitle-panel-row.is-selected {
-  outline: 1px solid #38bdf8;
-  outline-offset: 2px;
-}
-
-.subtitle-panel-empty {
-  margin: 0;
-  color: #a1a1aa;
 }
 
 .export-dialog {

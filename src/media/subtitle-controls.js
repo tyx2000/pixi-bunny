@@ -26,8 +26,6 @@ export function createSubtitleControls() {
     editInput: requireElement("subtitle-edit-input", HTMLInputElement),
     fontSelect,
     lineHeightInput,
-    panel: requireElement("subtitle-panel", HTMLElement),
-    panelList: requireElement("subtitle-panel-list", HTMLDivElement),
     shadowBlurInput,
     shadowColorInput,
     shadowDistanceInput,
